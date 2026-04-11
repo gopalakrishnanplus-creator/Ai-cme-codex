@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy on server via SSH
+      - name: Deploy to server over SSH
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -21,8 +21,20 @@ jobs:
           script_stop: true
           script: |
             set -e
+
             cd /var/www/Ai-cme
+
+            echo "=== Repo status before deploy ==="
+            git status
+
+            echo "=== Pull latest code ==="
             git pull origin main
+
+            echo "=== Install Python dependencies ==="
             /var/www/venv/bin/pip install -r /var/www/Ai-cme/adaptive_app/requirements.txt
+
+            echo "=== Restart FastAPI service ==="
             sudo systemctl restart fastapi
+
+            echo "=== FastAPI status ==="
             sudo systemctl status fastapi --no-pager
