@@ -18,10 +18,15 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: ${{ secrets.EC2_PORT }}
+          timeout: 30s
+          command_timeout: 20m
           script: |
             set -e
 
             cd /var/www/Ai-cme
+
+            echo "=== Repo status ==="
+            git status
 
             echo "=== Fetch latest ==="
             git fetch origin main
