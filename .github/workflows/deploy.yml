@@ -11,45 +11,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup SSH key
-        run: |
-          echo "${{ secrets.EC2_SSH_KEY_BASE64 }}" | base64 -d > key.pem
-          chmod 600 key.pem
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: azureuser   # IMPORTANT
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          timeout: 30s
+          command_timeout: 20m
+          script_stop: true
+          debug: true
+          script: |
+            set -e
 
-      - name: Test SSH connection
-        run: |
-          ssh -i key.pem -o StrictHostKeyChecking=no \
-          ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "echo ✅ CONNECTED"
+            echo "=== Connected to server ==="
 
-      - name: Deploy to server
-        run: |
-          ssh -i key.pem -o StrictHostKeyChecking=no \
-          ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            cd /var/www/Ai-cme
 
-          set -e
+            echo "=== Repo status ==="
+            git status
 
-          echo "=== Navigating to project ==="
-          cd /var/www/Ai-cme
+            echo "=== Fetch latest ==="
+            git fetch origin main
 
-          echo "=== Repo status ==="
-          git status
+            echo "=== Reset to origin/main ==="
+            git checkout main
+            git reset --hard origin/main
 
-          echo "=== Fetch latest ==="
-          git fetch origin main
+            echo "=== Install dependencies ==="
+            /var/www/venv/bin/pip install -r /var/www/Ai-cme/adaptive_app/requirements.txt
 
-          echo "=== Reset to origin/main ==="
-          git checkout main
-          git reset --hard origin/main
+            echo "=== Restart FastAPI ==="
+            sudo systemctl restart fastapi
 
-          echo "=== Install dependencies ==="
-          /var/www/venv/bin/pip install -r /var/www/Ai-cme/adaptive_app/requirements.txt
+            echo "=== Status ==="
+            sudo systemctl status fastapi --no-pager
 
-          echo "=== Restart FastAPI ==="
-          sudo systemctl restart fastapi
-
-          echo "=== Service status ==="
-          sudo systemctl status fastapi --no-pager
-
-          echo "✅ DEPLOYMENT SUCCESSFUL"
-
-          EOF
+            echo "✅ DEPLOY SUCCESS"
