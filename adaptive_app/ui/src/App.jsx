@@ -140,7 +140,7 @@ export default function AdaptiveApp() {
   /* ---------- bootstrap: load supertopics ---------- */
   useEffect(() => {
     setLoading(true);
-    axios.get("/api/supertopics")
+    axios.get("/api/api/supertopics")
       .then(r => {
         setSupertopics(r.data || []);
         setLoading(false);
@@ -153,7 +153,7 @@ export default function AdaptiveApp() {
 
   /* ---------- check for unfinished sessions on app load ---------- */
   useEffect(() => {
-    axios.get(`/api/resume-status/${USER_ID}`)
+    axios.get(`/api/api/resume-status/${USER_ID}`)
       .then(r => {
         const u = r.data?.unfinished || [];
         if (u.length > 0) {
@@ -179,7 +179,7 @@ export default function AdaptiveApp() {
   useEffect(() => {
     const poll = async () => {
       try {
-        const { data } = await axios.get(`/api/lock-status/${USER_ID}`);
+        const { data } = await axios.get(`/api/api/lock-status/${USER_ID}`);
         if (data) setLocked(Boolean(data.locked));
       } catch {}
     };
@@ -211,7 +211,7 @@ export default function AdaptiveApp() {
         alert("Session is being terminated because of inactivity.");
 
         try {
-          await axios.post("/api/session/idle-save", {
+          await axios.post("/api/api/session/idle-save", {
             user_id: USER_ID,
             topic_id: topicId,
             session_id: sessionId,
@@ -243,7 +243,7 @@ export default function AdaptiveApp() {
     if (!sessionId || !topicId || !plan) return;
     const save = async () => {
       try {
-        await axios.post("/api/session/snapshot", {
+        await axios.post("/api/api/session/snapshot", {
           user_id: USER_ID,
           topic_id: topicId,
           session_id: sessionId,
@@ -261,7 +261,7 @@ export default function AdaptiveApp() {
   useEffect(() => {
     if (!finished || !sessionId) return;
     setLoadingReport(true);
-    axios.get(`/api/report/${sessionId}`)
+    axios.get(`/api/api/report/${sessionId}`)
       .then(r => setReportMd(r.data.markdown))
       .catch(() => setReportMd("**Error:** unable to generate report."))
       .finally(() => setLoadingReport(false));
@@ -300,7 +300,7 @@ export default function AdaptiveApp() {
     setLoading(true);
     try {
       setSelectedSuper(name);
-      const { data } = await axios.get("/api/topics", {params: { supertopic: name, user_id: USER_ID },});
+      const { data } = await axios.get("/api/api/topics", {params: { supertopic: name, user_id: USER_ID },});
 
       setTopicsList(data || []);
       setView("topics");
@@ -316,8 +316,8 @@ export default function AdaptiveApp() {
     if (enforceLock("concept")) return;
     setLoading(true);
     try {
-      const { data: sessId } = await axios.post("/api/session", { user_id: USER_ID, topic_id: tId });
-      const { data: planJson } = await axios.get(`/api/lesson/${tId}/${USER_ID}`);
+      const { data: sessId } = await axios.post("/api/api/session", { user_id: USER_ID, topic_id: tId });
+      const { data: planJson } = await axios.get(`/api/api/lesson/${tId}/${USER_ID}`);
       setHistory([]);
       setSessionId(sessId);
       setTopicId(tId);
@@ -339,8 +339,8 @@ export default function AdaptiveApp() {
   const resumeSession = async (t) => {
     setLoading(true);
     try {
-      const { data: snapshot } = await axios.get(`/api/resume/${USER_ID}/${t.topic_id}`);
-      const { data: planJson } = await axios.get(`/api/lesson/${t.topic_id}/${USER_ID}`);
+      const { data: snapshot } = await axios.get(`/api/api/resume/${USER_ID}/${t.topic_id}`);
+      const { data: planJson } = await axios.get(`/api/api/lesson/${t.topic_id}/${USER_ID}`);
 
       setPlan(planJson);
       setTopicId(t.topic_id);
@@ -371,7 +371,7 @@ export default function AdaptiveApp() {
 
   const terminateSession = async (t) => {
     try {
-      await axios.delete(`/api/resume/${USER_ID}/${t.topic_id}`);
+      await axios.delete(`/api/api/resume/${USER_ID}/${t.topic_id}`);
       const updated = resumeData.filter(x => x.topic_id !== t.topic_id);
       setResumeData(updated);
       if (updated.length === 0) {
@@ -396,7 +396,7 @@ export default function AdaptiveApp() {
   
   // Refetch unfinished sessions from backend when going home
   try {
-    const { data } = await axios.get(`/api/resume-status/${USER_ID}`);
+    const { data } = await axios.get(`/api/api/resume-status/${USER_ID}`);
     const u = data?.unfinished || [];
     
     if (u.length > 0) {
@@ -425,7 +425,7 @@ export default function AdaptiveApp() {
   
   // Check for unfinished sessions before loading dashboard
   try {
-    const { data: resumeStatusData } = await axios.get(`/api/resume-status/${USER_ID}`);
+    const { data: resumeStatusData } = await axios.get(`/api/api/resume-status/${USER_ID}`);
     const u = resumeStatusData?.unfinished || [];
     
     if (u.length > 0) {
@@ -442,7 +442,7 @@ export default function AdaptiveApp() {
     }
     
     // If no unfinished sessions, proceed to load dashboard
-    const { data } = await axios.get(`/api/dashboard/${USER_ID}`);
+    const { data } = await axios.get(`/api/api/dashboard/${USER_ID}`);
     setDashboardRows(data.sessions || []);
     setView("dashboard");
   } catch (error) {
@@ -469,7 +469,7 @@ export default function AdaptiveApp() {
     const isCorrect = chosenIdx === correctIdx;
 
     try {
-      await axios.post("/api/answer", {
+      await axios.post("/api/api/answer", {
         session_id: sessionId,
         topic_id: topicId,
         subtopic_id: currentSub().subtopic_id,
@@ -1827,8 +1827,8 @@ export default function AdaptiveApp() {
                                     variant="contained"
                                     onClick={async () => {
                                       try {
-                                        const { data: reportData } = await axios.get(`/api/report/${row.session_id}`);
-                                        const { data: planJson } = await axios.get(`/api/lesson/${row.topic_id}/${USER_ID}`);
+                                        const { data: reportData } = await axios.get(`/api/api/report/${row.session_id}`);
+                                        const { data: planJson } = await axios.get(`/api/api/lesson/${row.topic_id}/${USER_ID}`);
                                         setReportMd(reportData.markdown);
                                         setPlan(planJson);
                                         setTopicId(row.topic_id);
