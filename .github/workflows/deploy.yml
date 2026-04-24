@@ -1,0 +1,51 @@
+name: Deploy Ai-cme FastAPI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: azureuser   # IMPORTANT
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          timeout: 30s
+          command_timeout: 20m
+          script_stop: true
+          debug: true
+          script: |
+            set -e
+
+            echo "=== Connected to server ==="
+
+            cd /var/www/Ai-cme
+
+            echo "=== Repo status ==="
+            git status
+
+            echo "=== Fetch latest ==="
+            git fetch origin main
+
+            echo "=== Reset to origin/main ==="
+            git checkout main
+            git reset --hard origin/main
+
+            echo "=== Install dependencies ==="
+            /var/www/venv/bin/pip install -r /var/www/Ai-cme/adaptive_app/requirements.txt
+
+            echo "=== Restart FastAPI ==="
+            sudo systemctl restart fastapi
+
+            echo "=== Status ==="
+            sudo systemctl status fastapi --no-pager
+
+            echo "✅ DEPLOY SUCCESS"
