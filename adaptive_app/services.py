@@ -14,6 +14,7 @@ import json, pathlib, functools
 from typing import Dict, Any, List, Tuple, Optional
 from functools import lru_cache
 import uuid
+from collections import Counter, defaultdict
 # -----------------------------------------------------------------------
 # Study‑plan assembly
 # -----------------------------------------------------------------------
@@ -34,6 +35,48 @@ _STUDYPLAN_DIR = pathlib.Path(__file__).parent / "studyplans"   # ./studyplans/*
 # ---------------------------------------------------------------------
 def _plan_files():
     return _STUDYPLAN_DIR.glob("*_1.json")
+
+
+def _clean_supertopic(value: Optional[str]) -> str:
+    raw = " ".join((value or "").split()).strip()
+    return raw or "Uncategorized"
+
+
+def _preferred_label(counter: Counter) -> str:
+    return max(
+        counter.items(),
+        key=lambda item: (
+            item[1],
+            0 if not item[0].isupper() else -1,
+            -len(item[0]),
+        ),
+    )[0]
+
+
+@lru_cache(maxsize=1)
+def _supertopic_aliases() -> Dict[str, str]:
+    buckets: Dict[str, Counter] = defaultdict(Counter)
+    for file in _plan_files():
+        try:
+            data = _load_json(file)
+            if "topic_id" not in data or "topic_name" not in data:
+                continue
+            raw = _clean_supertopic(data.get("supertopic"))
+            buckets[raw.casefold()][raw] += 1
+        except Exception:
+            continue
+
+    return {
+        folded: _preferred_label(labels)
+        for folded, labels in buckets.items()
+    }
+
+
+def _canonical_supertopic(value: Optional[str]) -> str:
+    raw = _clean_supertopic(value)
+    return _supertopic_aliases().get(raw.casefold(), raw)
+
+
 def _uuid5_from(*parts: str) -> str:
     """
     Make a stable UUIDv5 from a tuple of strings.
@@ -109,6 +152,7 @@ def _expand_case_studies(plan: Dict[str, Any]) -> Dict[str, Any]:
                 "subtopic_id": _uuid5_from(str(sub.get("subtopic_id")), "case", str(cs.get("case_id"))),
                 "subtopic_title": f"Case: {cs.get('title') or 'Case Study'}",
                 "sequence_no": (sub.get("sequence_no") or 0),
+                "category": sub.get("category") or sub.get("subtopic_title"),
                 "concept": cs.get("vignette", ""),   # show vignette in the 'Concept' tab
                 "references": cs.get("references") or sub.get("references") or [],
                 "questions": [],
@@ -125,7 +169,10 @@ def _expand_case_studies(plan: Dict[str, Any]) -> Dict[str, Any]:
 @functools.lru_cache(maxsize=128)
 def _load_json(path: pathlib.Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+        data = json.load(fh)
+    if isinstance(data, dict) and "topic_id" not in data and isinstance(data.get("plan_json"), dict):
+        return data["plan_json"]
+    return data
 
 def list_supertopics() -> List[str]:
     """Return all unique supertopics found in the studyplan files."""
@@ -133,7 +180,9 @@ def list_supertopics() -> List[str]:
     for file in _plan_files():
         try:
             data = _load_json(file)
-            sup = (data.get("supertopic") or "Uncategorized").strip()
+            if "topic_id" not in data or "topic_name" not in data:
+                continue
+            sup = _canonical_supertopic(data.get("supertopic"))
             if sup:
                 out.add(sup)
         except Exception:
@@ -149,7 +198,9 @@ def list_topics(supertopic: Optional[str] = None) -> List[dict]:
     for file in _plan_files():
         try:
             data = _load_json(file)
-            sup = (data.get("supertopic") or "Uncategorized").strip()
+            if "topic_id" not in data or "topic_name" not in data:
+                continue
+            sup = _canonical_supertopic(data.get("supertopic"))
             if supertopic and sup.lower() != supertopic.lower():
                 continue
             out.append({
@@ -169,9 +220,14 @@ def load_plan(topic_id: UUID | str) -> Dict[str, Any] | None:
     # 1. quick filename match
     for file in _STUDYPLAN_DIR.glob("*_1.json"):
         data = _load_json(file)
+        if "topic_id" not in data or "topic_name" not in data:
+            continue
         if str(topic_id).lower() in {str(data["topic_id"]).lower(), data["topic_name"].lower()}:
             # patch in a dummy completion percentage so the UI keeps working
             data.setdefault("percentage_complete", 0.0)
+            data["supertopic"] = _canonical_supertopic(data.get("supertopic"))
+            for sub in data.get("subtopics", []):
+                sub["category"] = sub.get("category")
             return _expand_case_studies(data)
     return None
 def _serialise_question(q: Question) -> QuestionOut:
