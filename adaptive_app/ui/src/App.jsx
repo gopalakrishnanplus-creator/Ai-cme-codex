@@ -3,7 +3,7 @@ import axios from "axios";
 import {
   Box, Button, Card, CardActionArea, CardContent, Grid, Paper,
   Breadcrumbs, Link, Typography, Tabs, Tab, RadioGroup, FormControlLabel,
-  Radio, Stack, CircularProgress, Divider, LinearProgress, Chip, 
+  Radio, Stack, CircularProgress, Divider, LinearProgress, Chip,
   IconButton, Fade, Slide, Zoom, Alert, Avatar, Container, Dialog,
   DialogTitle, DialogContent, DialogActions
 } from "@mui/material";
@@ -25,6 +25,10 @@ import {
 } from "@mui/icons-material";
 
 import { marked } from "marked";
+
+// Keep production requests on `/api/api/*` while local Vite dev continues
+// to hit `/api/*` through the proxy.
+axios.defaults.baseURL = import.meta.env.DEV ? "" : "/api";
 
 function downloadMarkdown(filename, contents) {
   const blob = new Blob([contents], { type: "text/markdown" });
@@ -65,12 +69,48 @@ function nextCursorFromAttempts(planJson, snapshot) {
   return null; // everything complete
 }
 
+function subtopicCategoryLabel(subtopic) {
+  const category = String(subtopic?.category || "").trim();
+  const fallback = String(subtopic?.subtopic_title || "").trim();
+  return category || fallback || "Uncategorized";
+}
+
+function buildCategoryGroups(planJson) {
+  const groups = [];
+  const byKey = new Map();
+
+  for (const subtopic of planJson?.subtopics || []) {
+    const key = subtopicCategoryLabel(subtopic);
+    if (!byKey.has(key)) {
+      const group = {
+        key,
+        title: key,
+        items: [],
+        conceptCount: 0,
+        caseCount: 0,
+        questionCount: 0,
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+
+    const group = byKey.get(key);
+    group.items.push(subtopic);
+    group.questionCount += subtopic?.questions?.length || 0;
+    if (subtopic?.is_case) group.caseCount += 1;
+    else group.conceptCount += 1;
+  }
+
+  return groups;
+}
+
 export default function AdaptiveApp() {
   /* -------- app-level navigation ---------- */
   const [history, setHistory] = useState([]);
   const [view, setView] = useState("home");
   const [supertopics, setSupertopics] = useState([]);
   const [selectedSuper, setSelectedSuper] = useState("");
+  const [selectedCategory, setSelectedCategory] = useState("");
   const [topicsList, setTopicsList] = useState([]);
 
   /* ---------- topic/session state ---------- */
@@ -111,6 +151,7 @@ export default function AdaptiveApp() {
   const [finished, setFinished] = useState(false);
   const [reportMd, setReportMd] = useState("");
   const [loadingReport, setLoadingReport] = useState(false);
+  const hasActiveSession = Boolean(sessionId) && !finished;
 
   /* ---------- loading states ---------- */
   const [loading, setLoading] = useState(false);
@@ -118,6 +159,8 @@ export default function AdaptiveApp() {
   /* ---------- resume session state ---------- */
   const [resumeData, setResumeData] = useState([]);
   const [showResumePrompt, setShowResumePrompt] = useState(false);
+  const [activeSessionPromptOpen, setActiveSessionPromptOpen] = useState(false);
+  const [pendingLockedView, setPendingLockedView] = useState("home");
 
   /* ---------- dashboard state ---------- */
   const [dashboardRows, setDashboardRows] = useState([]);
@@ -172,21 +215,23 @@ export default function AdaptiveApp() {
 
   /* ---------- NEW: derive lock from local state ---------- */
   useEffect(() => {
-    setLocked(Boolean(sessionId) || (resumeData && resumeData.length > 0));
-  }, [sessionId, resumeData]);
+    setLocked(hasActiveSession || (resumeData && resumeData.length > 0));
+  }, [hasActiveSession, resumeData]);
 
   /* ---------- NEW: optional robust lock polling ---------- */
   useEffect(() => {
     const poll = async () => {
       try {
         const { data } = await axios.get(`/api/lock-status/${USER_ID}`);
-        if (data) setLocked(Boolean(data.locked));
+        if (data) {
+          setLocked(Boolean(data.locked) || hasActiveSession || (resumeData && resumeData.length > 0));
+        }
       } catch {}
     };
     const id = setInterval(poll, 15000);
     poll();
     return () => clearInterval(id);
-  }, []);
+  }, [USER_ID, hasActiveSession, resumeData]);
 
   /* ---------- NEW: block tab/window reload while locked ---------- */
   useEffect(() => {
@@ -267,8 +312,29 @@ export default function AdaptiveApp() {
       .finally(() => setLoadingReport(false));
   }, [finished, sessionId]);
 
+  useEffect(() => {
+    if (!plan) {
+      setSelectedCategory("");
+      return;
+    }
+
+    const groups = buildCategoryGroups(plan);
+    if (groups.length === 0) {
+      setSelectedCategory("");
+      return;
+    }
+
+    if (!groups.some(group => group.key === selectedCategory)) {
+      setSelectedCategory(groups[0].key);
+    }
+  }, [plan, selectedCategory]);
+
   /* ---------- helpers ---------- */
   const currentSub = () => plan?.subtopics?.[subIdx];
+  const categoryGroups = () => buildCategoryGroups(plan);
+  const currentCategoryGroup = () =>
+    categoryGroups().find(group => group.key === selectedCategory) || categoryGroups()[0] || null;
+  const currentCategoryItems = () => currentCategoryGroup()?.items || [];
   const currentQ = () => currentSub()?.questions?.[mcqIdx];
   const variants = () => currentQ()?.variants || [];
   const currentStem = () =>
@@ -286,10 +352,16 @@ export default function AdaptiveApp() {
 
   /* ---------- NEW: enforce lock on navigations ---------- */
   const enforceLock = (desiredView) => {
-    const allowed = ["concept", "questions"];
-    if (locked && !allowed.includes(desiredView)) {
+    const allowed = ["categories", "concept", "questions"];
+    if (!allowed.includes(desiredView) && hasActiveSession) {
+      setPendingLockedView(desiredView);
+      setActiveSessionPromptOpen(true);
+      if (plan) setView(allowed.includes(view) ? view : "questions");
+      return true; // blocked
+    }
+    if (!allowed.includes(desiredView) && resumeData && resumeData.length > 0) {
       setShowResumePrompt(true);
-      if (plan) setView(view === "concept" ? "concept" : "questions");
+      if (plan) setView(allowed.includes(view) ? view : "questions");
       return true; // blocked
     }
     return false;
@@ -313,21 +385,23 @@ export default function AdaptiveApp() {
   };
 
   const startTopic = async (tId) => {
-    if (enforceLock("concept")) return;
+    if (enforceLock("categories")) return;
     setLoading(true);
     try {
-      const { data: sessId } = await axios.post("/api/session", { user_id: USER_ID, topic_id: tId });
       const { data: planJson } = await axios.get(`/api/lesson/${tId}/${USER_ID}`);
+      const groups = buildCategoryGroups(planJson);
       setHistory([]);
-      setSessionId(sessId);
+      setSessionId("");
       setTopicId(tId);
       setPlan(planJson);
+      setSelectedSuper(planJson?.supertopic || selectedSuper || "");
+      setSelectedCategory(groups[0]?.key || "");
 
       setSubIdx(0); setMcqIdx(0); setAttemptIdx(0);
       setChoice(null); setResult(null); setMode("question"); setTab(0);
       setFinished(false); setReportMd(""); setLoadingReport(false);
-      
-      setView("concept");
+
+      setView("categories");
     } catch (error) {
       console.error("Error starting topic:", error);
     } finally {
@@ -341,20 +415,24 @@ export default function AdaptiveApp() {
     try {
       const { data: snapshot } = await axios.get(`/api/resume/${USER_ID}/${t.topic_id}`);
       const { data: planJson } = await axios.get(`/api/lesson/${t.topic_id}/${USER_ID}`);
+      const groups = buildCategoryGroups(planJson);
 
       setPlan(planJson);
       setTopicId(t.topic_id);
       setSessionId(snapshot.session_id);
+      setSelectedSuper(planJson?.supertopic || selectedSuper || "");
 
       const next = nextCursorFromAttempts(planJson, snapshot);
       if (next) {
         setSubIdx(next.subIdx);
         setMcqIdx(next.mcqIdx);
         setAttemptIdx(next.attemptIdx);
+        setSelectedCategory(subtopicCategoryLabel(planJson.subtopics?.[next.subIdx]));
         setMode("question");
         setTab(1);
         setView("questions");
       } else {
+        setSelectedCategory(groups[0]?.key || "");
         setFinished(true);
         setView("questions");
       }
@@ -383,22 +461,66 @@ export default function AdaptiveApp() {
     }
   };
 
-  const beginQuestions = () => { setView("questions"); setTab(1); };
+  const openCategory = (categoryKey) => {
+    setSelectedCategory(categoryKey);
+    setView("concept");
+  };
 
-  const goHome = async () => { 
+  const openCurrentCategory = () => {
+    const subtopic = currentSub();
+    if (!subtopic) return;
+    setSelectedCategory(subtopicCategoryLabel(subtopic));
+    setView("concept");
+  };
+
+  const beginQuestions = async () => {
+    try {
+      if (!hasActiveSession) {
+        setLoading(true);
+        const { data: sessId } = await axios.post("/api/session", { user_id: USER_ID, topic_id: topicId });
+        setSessionId(sessId);
+        setFinished(false);
+        setReportMd("");
+        setLoadingReport(false);
+        setHistory([]);
+        setSubIdx(0);
+        setMcqIdx(0);
+        setAttemptIdx(0);
+        setChoice(null);
+        setResult(null);
+        setShowRationale(false);
+        setLastChosenIdx(null);
+        setAwaitingAutoNext(false);
+        setAutoNextIn(0);
+        clearAutoNextTimers();
+        setMode("question");
+      }
+      setView("questions");
+      setTab(1);
+    } catch (error) {
+      console.error("Error starting session:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const goHome = async () => {
   if (enforceLock("home")) return;
-  
+
   // First reset the view state
-  setView("home"); 
-  setSelectedSuper(""); 
-  setTopicsList([]); 
+  setView("home");
+  setSelectedSuper("");
+  setSelectedCategory("");
+  setTopicsList([]);
   setPlan(null);
-  
+  setTopicId("");
+  setSessionId("");
+
   // Refetch unfinished sessions from backend when going home
   try {
     const { data } = await axios.get(`/api/resume-status/${USER_ID}`);
     const u = data?.unfinished || [];
-    
+
     if (u.length > 0) {
       // Check if any session has missing topic_id or topic_name
       const hasInvalidData = u.some(session => !session.topic_id || !session.topic_name);
@@ -422,12 +544,12 @@ export default function AdaptiveApp() {
 
   const loadDashboard = async () => {
   if (enforceLock("dashboard")) return;
-  
+
   // Check for unfinished sessions before loading dashboard
   try {
     const { data: resumeStatusData } = await axios.get(`/api/resume-status/${USER_ID}`);
     const u = resumeStatusData?.unfinished || [];
-    
+
     if (u.length > 0) {
       // Check if any session has missing topic_id or topic_name
       const hasInvalidData = u.some(session => !session.topic_id || !session.topic_name);
@@ -440,7 +562,7 @@ export default function AdaptiveApp() {
       setShowResumePrompt(true);
       return; // Don't proceed to dashboard, show resume prompt instead
     }
-    
+
     // If no unfinished sessions, proceed to load dashboard
     const { data } = await axios.get(`/api/dashboard/${USER_ID}`);
     setDashboardRows(data.sessions || []);
@@ -449,6 +571,72 @@ export default function AdaptiveApp() {
     console.error("Error loading dashboard:", error);
   }
 };
+
+  const clearLessonState = () => {
+    clearAutoNextTimers();
+    setPlan(null);
+    setTopicId("");
+    setSessionId("");
+    setSelectedCategory("");
+    setSubIdx(0);
+    setMcqIdx(0);
+    setAttemptIdx(0);
+    setChoice(null);
+    setResult(null);
+    setMode("question");
+    setTab(1);
+    setLastChosenIdx(null);
+    setShowRationale(false);
+    setAwaitingAutoNext(false);
+    setAutoNextIn(0);
+    setFinished(false);
+    setReportMd("");
+    setLoadingReport(false);
+    setHistory([]);
+  };
+
+  const saveAndLeaveActiveSession = async () => {
+    if (!hasActiveSession || !topicId || !sessionId) {
+      setActiveSessionPromptOpen(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await axios.post("/api/session/idle-save", {
+        user_id: USER_ID,
+        topic_id: topicId,
+        session_id: sessionId,
+        cursors: { subIdx, mcqIdx, attemptIdx, view, tab, history }
+      });
+
+      const { data: resumeStatusData } = await axios.get(`/api/resume-status/${USER_ID}`);
+      const unfinished = resumeStatusData?.unfinished || [];
+      setResumeData(unfinished);
+      setShowResumePrompt(false);
+
+      const targetView = pendingLockedView;
+      clearLessonState();
+
+      if (targetView === "dashboard") {
+        const { data } = await axios.get(`/api/dashboard/${USER_ID}`);
+        setDashboardRows(data.sessions || []);
+        setView("dashboard");
+      } else if (targetView === "topics") {
+        setView("topics");
+      } else {
+        setSelectedSuper("");
+        setTopicsList([]);
+        setDashboardRows([]);
+        setView("home");
+      }
+    } catch (error) {
+      console.error("Error saving current session before leaving:", error);
+    } finally {
+      setActiveSessionPromptOpen(false);
+      setLoading(false);
+    }
+  };
 
   const clearAutoNextTimers = () => {
     if (autoNextTimeoutRef.current) {
@@ -539,7 +727,7 @@ export default function AdaptiveApp() {
     const lastSub = plan.subtopics.length - 1;
     const lastMcq = currentSub().questions.length - 1;
     if (subIdx === lastSub && mcqIdx === lastMcq) {
-      setFinished(true); 
+      setFinished(true);
       return;
     }
     if (mcqIdx < lastMcq) setMcqIdx(mcqIdx + 1);
@@ -552,13 +740,150 @@ export default function AdaptiveApp() {
     return () => clearAutoNextTimers();
   }, []);
 
+  const renderLessonFooter = (backLabel, onBack) => (
+    <Paper
+      elevation={8}
+      sx={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.95) 100%)',
+        backdropFilter: 'blur(20px)',
+        borderTop: '1px solid rgba(195, 207, 226, 0.3)',
+        zIndex: 1000,
+        py: 0.75,
+        px: 3,
+      }}
+    >
+      <Container maxWidth="lg">
+        <Stack
+          direction="row"
+          spacing={3}
+          sx={{
+            justifyContent: 'center',
+            alignItems: 'center'
+          }}
+        >
+          <Button
+            variant="outlined"
+            onClick={onBack}
+            startIcon={<ArrowBackIcon />}
+            sx={{
+              borderRadius: 25,
+              px: 2.5,
+              py: 0.5,
+              borderColor: '#3498db',
+              color: '#3498db',
+              fontWeight: 'bold',
+              borderWidth: '2px',
+              textTransform: 'none',
+              fontSize: '1rem',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              '&:hover': {
+                borderColor: '#3498db',
+                background: 'rgba(52, 152, 219, 0.1)',
+                borderWidth: '2px',
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 25px rgba(52, 152, 219, 0.2)'
+              }
+            }}
+          >
+            {backLabel}
+          </Button>
+
+          <Box sx={{
+            height: 20,
+            width: 1,
+            background: 'linear-gradient(to bottom, transparent, rgba(195, 207, 226, 0.5), transparent)',
+            mx: 0.5
+          }} />
+
+          <Button
+            variant="contained"
+            onClick={beginQuestions}
+            endIcon={<QuizIcon />}
+            sx={{
+              borderRadius: 25,
+              px: 3,
+              py: 0.5,
+              background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
+              boxShadow: '0 8px 25px rgba(255, 107, 53, 0.3)',
+              fontWeight: 'bold',
+              textTransform: 'none',
+              fontSize: '1.1rem',
+              border: '2px solid transparent',
+              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              '&:hover': {
+                boxShadow: '0 12px 35px rgba(255, 107, 53, 0.4)',
+                background: 'linear-gradient(135deg, #f7931e 0%, #ff6b35 100%)',
+                transform: 'translateY(-3px)'
+              }
+            }}
+          >
+            {hasActiveSession ? "Continue Session" : "Start Session"}
+          </Button>
+        </Stack>
+      </Container>
+    </Paper>
+  );
+
+  const activeSessionDestinationLabel = {
+    home: "Home",
+    dashboard: "Dashboard",
+    topics: "Topics",
+  }[pendingLockedView] || "that page";
+
+  const activeSessionDialog = (
+    <Dialog
+      open={activeSessionPromptOpen}
+      onClose={() => setActiveSessionPromptOpen(false)}
+      fullWidth
+      maxWidth="sm"
+    >
+      <DialogTitle sx={{ fontWeight: 'bold', color: '#2c3e50' }}>
+        Session In Progress
+      </DialogTitle>
+      <DialogContent>
+        <Typography sx={{ color: '#34495e', lineHeight: 1.7 }}>
+          You already have a session in progress. You can keep going where you are, or we can save your progress and take you to {activeSessionDestinationLabel}.
+        </Typography>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 3 }}>
+        <Button
+          onClick={() => setActiveSessionPromptOpen(false)}
+          variant="outlined"
+          sx={{
+            borderRadius: 2,
+            textTransform: 'none',
+            fontWeight: 'bold'
+          }}
+        >
+          Continue Session
+        </Button>
+        <Button
+          onClick={saveAndLeaveActiveSession}
+          variant="contained"
+          sx={{
+            borderRadius: 2,
+            textTransform: 'none',
+            fontWeight: 'bold',
+            background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)'
+          }}
+        >
+          Save and Go to {activeSessionDestinationLabel}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+
   /* ---------- LOADING SCREEN ---------- */
   if (loading) {
     return (
-      <Box sx={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
+      <Box sx={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)'
       }}>
@@ -571,18 +896,18 @@ export default function AdaptiveApp() {
   }
 
   /* ---------- RESUME PROMPT VIEW ---------- */
-  if (showResumePrompt) {
+  if (showResumePrompt && resumeData.length > 0) {
     return (
-      <Box sx={{ 
+      <Box sx={{
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
         py: 4
       }}>
         <Container maxWidth="md">
           <Fade in timeout={800}>
-            <Paper sx={{ 
-              p: 4, 
-              borderRadius: 4, 
+            <Paper sx={{
+              p: 4,
+              borderRadius: 4,
               boxShadow: '0 16px 32px rgba(44, 62, 80, 0.1)',
               background: 'white',
               border: '1px solid rgba(195, 207, 226, 0.3)'
@@ -600,11 +925,11 @@ export default function AdaptiveApp() {
 
               <Stack spacing={2}>
                 {resumeData.map((t) => (
-                  <Paper 
-                    key={t.topic_id} 
-                    sx={{ 
-                      p: 3, 
-                      borderRadius: 2, 
+                  <Paper
+                    key={t.topic_id}
+                    sx={{
+                      p: 3,
+                      borderRadius: 2,
                       background: 'linear-gradient(135deg, rgba(255, 107, 53, 0.05) 0%, rgba(247, 147, 30, 0.05) 100%)',
                       border: '1px solid rgba(255, 107, 53, 0.2)',
                       display: 'flex',
@@ -621,10 +946,10 @@ export default function AdaptiveApp() {
                       </Typography>
                     </Box>
                     <Stack direction="row" spacing={2}>
-                      <Button 
+                      <Button
                         variant="contained"
                         onClick={() => resumeSession(t)}
-                        sx={{ 
+                        sx={{
                           background: 'linear-gradient(135deg, #2ed573 0%, #1dd1a1 100%)',
                           boxShadow: '0 4px 12px rgba(46, 213, 115, 0.3)',
                           fontWeight: 'bold',
@@ -633,11 +958,11 @@ export default function AdaptiveApp() {
                       >
                         Continue Session
                       </Button>
-                      <Button 
+                      <Button
                         variant="outlined"
                         color="error"
                         onClick={() => terminateSession(t)}
-                        sx={{ 
+                        sx={{
                           fontWeight: 'bold',
                           textTransform: 'none'
                         }}
@@ -649,7 +974,7 @@ export default function AdaptiveApp() {
                 ))}
               </Stack>
 
-              <Button 
+              <Button
                 fullWidth
                 variant="outlined"
                 onClick={() => {
@@ -670,13 +995,13 @@ export default function AdaptiveApp() {
   /* ---------- HOME: SuperTopics grid ---------- */
   if (view === "home") {
     return (
-      <Box sx={{ 
+      <Box sx={{
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
         py: 4
       }}>
         <Container maxWidth="lg">
-          <Fade in timeout={800}> 
+          <Fade in timeout={800}>
             <Box>
               <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 4 }}>
                 <Stack direction="row" alignItems="center" spacing={2}>
@@ -685,11 +1010,11 @@ export default function AdaptiveApp() {
                     Your Pediatrics Tutor
                   </Typography>
                 </Stack>
-                <Button 
+                <Button
                   variant="outlined"
                   startIcon={<DashboardIcon />}
                   onClick={loadDashboard}
-                  sx={{ 
+                  sx={{
                     borderRadius: 25,
                     px: 2.5,
                     py: 0.5,
@@ -703,17 +1028,17 @@ export default function AdaptiveApp() {
                   Dashboard
                 </Button>
               </Stack>
-              
+
               <Typography variant="h5" sx={{ mb: 4, color: '#34495e', textAlign: 'center', fontWeight: '500' }}>
                 Choose your learning journey
               </Typography>
-              
+
               <Grid container spacing={3}>
                 {supertopics.map((s, index) => (
                   <Grid item xs={12} sm={6} md={4} key={s}>
                     <Zoom in timeout={800 + index * 100}>
-                      <Card sx={{ 
-                        borderRadius: 4, 
+                      <Card sx={{
+                        borderRadius: 4,
                         boxShadow: '0 12px 24px rgba(44, 62, 80, 0.1)',
                         background: 'white',
                         border: '1px solid rgba(195, 207, 226, 0.3)',
@@ -726,9 +1051,9 @@ export default function AdaptiveApp() {
                       }}>
                         <CardActionArea onClick={() => chooseSuper(s)} sx={{ p: 3 }}>
                           <Stack alignItems="center" spacing={2}>
-                            <Avatar sx={{ 
-                              width: 64, 
-                              height: 64, 
+                            <Avatar sx={{
+                              width: 64,
+                              height: 64,
                               background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
                               fontSize: 32,
                               boxShadow: '0 8px 16px rgba(255, 107, 53, 0.3)'
@@ -758,7 +1083,7 @@ export default function AdaptiveApp() {
   /* ---------- TOPICS under selected SuperTopic ---------- */
   if (view === "topics") {
     return (
-      <Box sx={{ 
+      <Box sx={{
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
         py: 4
@@ -766,22 +1091,22 @@ export default function AdaptiveApp() {
         <Container maxWidth="lg">
           <Slide direction="right" in timeout={600}>
             <Box>
-              <Paper sx={{ 
-                p: 2, 
-                mb: 3, 
-                borderRadius: 3, 
+              <Paper sx={{
+                p: 2,
+                mb: 3,
+                borderRadius: 3,
                 background: 'white',
                 border: '1px solid rgba(195, 207, 226, 0.3)',
                 boxShadow: '0 4px 12px rgba(44, 62, 80, 0.08)'
               }}>
                 <Breadcrumbs>
-                  <Link 
-                    underline="hover" 
-                    onClick={goHome} 
-                    sx={{ 
-                      cursor: "pointer", 
-                      display: 'flex', 
-                      alignItems: 'center', 
+                  <Link
+                    underline="hover"
+                    onClick={goHome}
+                    sx={{
+                      cursor: "pointer",
+                      display: 'flex',
+                      alignItems: 'center',
                       gap: 1,
                       color: '#3498db',
                       '&:hover': { color: '#ff6b35' }
@@ -804,8 +1129,8 @@ export default function AdaptiveApp() {
                 {topicsList.map((t, index) => (
                   <Grid item xs={12} sm={6} md={4} key={t.topic_id}>
                     <Zoom in timeout={600 + index * 100}>
-                      <Card sx={{ 
-                        borderRadius: 4, 
+                      <Card sx={{
+                        borderRadius: 4,
                         boxShadow: '0 12px 24px rgba(44, 62, 80, 0.1)',
                         background: 'white',
                         border: '1px solid rgba(195, 207, 226, 0.3)',
@@ -819,9 +1144,9 @@ export default function AdaptiveApp() {
                       }}>
                         <CardActionArea onClick={() => startTopic(t.topic_id)} sx={{ height: "100%", p: 3 }}>
                           <Stack alignItems="center" spacing={2}>
-                            <Avatar sx={{ 
-                              width: 56, 
-                              height: 56, 
+                            <Avatar sx={{
+                              width: 56,
+                              height: 56,
                               background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
                               fontSize: 24,
                               boxShadow: '0 6px 12px rgba(255, 107, 53, 0.3)'
@@ -834,9 +1159,9 @@ export default function AdaptiveApp() {
                             <Typography variant="body2" sx={{ color: '#34495e', textAlign: 'center', opacity: 0.8 }}>
                               Start with concept overview, then practice with questions
                             </Typography>
-                            <Chip 
-                              label="Start Learning" 
-                              sx={{ 
+                            <Chip
+                              label="Start Learning"
+                              sx={{
                                 background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
                                 color: 'white',
                                 fontWeight: 'bold',
@@ -857,39 +1182,34 @@ export default function AdaptiveApp() {
     );
   }
 
-  /* ---------- CONCEPT page for a loaded topic ---------- */
-  if (view === "concept" && plan) {
+  /* ---------- CATEGORIES under selected Topic ---------- */
+  if (view === "categories" && plan) {
     return (
-      <Box sx={{ 
+      <Box sx={{
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
         py: 4,
-        pb: 5
+        pb: 14
       }}>
         <Container maxWidth="lg">
           <Fade in timeout={800}>
-            <Paper sx={{ 
-              p: 4, 
-              borderRadius: 4, 
-              boxShadow: '0 16px 32px rgba(44, 62, 80, 0.1)',
-              background: 'white',
-              border: '1px solid rgba(195, 207, 226, 0.3)'
-            }}>
-              <Paper sx={{ 
-                p: 2, 
-                mb: 3, 
-                borderRadius: 2, 
-                background: 'linear-gradient(135deg, rgba(52, 152, 219, 0.1) 0%, rgba(52, 152, 219, 0.05) 100%)',
-                border: '1px solid rgba(52, 152, 219, 0.2)'
+            <Box>
+              <Paper sx={{
+                p: 2,
+                mb: 3,
+                borderRadius: 3,
+                background: 'white',
+                border: '1px solid rgba(195, 207, 226, 0.3)',
+                boxShadow: '0 4px 12px rgba(44, 62, 80, 0.08)'
               }}>
                 <Breadcrumbs>
-                  <Link 
-                    underline="hover" 
-                    onClick={goHome} 
-                    sx={{ 
-                      cursor: "pointer", 
-                      display: 'flex', 
-                      alignItems: 'center', 
+                  <Link
+                    underline="hover"
+                    onClick={goHome}
+                    sx={{
+                      cursor: "pointer",
+                      display: 'flex',
+                      alignItems: 'center',
                       gap: 1,
                       color: '#3498db',
                       '&:hover': { color: '#ff6b35' }
@@ -898,10 +1218,10 @@ export default function AdaptiveApp() {
                     <HomeIcon fontSize="small" />
                     Home
                   </Link>
-                  <Link 
-                    underline="hover" 
-                    onClick={() => setView("topics")} 
-                    sx={{ 
+                  <Link
+                    underline="hover"
+                    onClick={() => setView("topics")}
+                    sx={{
                       cursor: "pointer",
                       color: '#3498db',
                       '&:hover': { color: '#ff6b35' }
@@ -916,16 +1236,165 @@ export default function AdaptiveApp() {
               </Paper>
 
               <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
-                <LightbulbIcon sx={{ fontSize: 32, color: '#ff6b35' }} />
+                <BookIcon sx={{ fontSize: 32, color: '#ff6b35' }} />
                 <Typography variant="h4" sx={{ fontWeight: 'bold', color: '#2c3e50' }}>
                   {plan.topic_name}
                 </Typography>
               </Stack>
 
-              <Alert 
-                severity="info" 
-                sx={{ 
-                  mb: 3, 
+              <Alert
+                severity="info"
+                sx={{
+                  mb: 3,
+                  borderRadius: 2,
+                  backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                  border: '1px solid rgba(52, 152, 219, 0.3)',
+                  '& .MuiAlert-icon': { color: '#3498db' }
+                }}
+              >
+                <Typography variant="body2" sx={{ color: '#2c3e50' }}>
+                  Browse by category first. If a subtopic has no category, its own title becomes the category label.
+                </Typography>
+              </Alert>
+
+              <Grid container spacing={3}>
+                {categoryGroups().map((group, index) => (
+                  <Grid item xs={12} sm={6} md={4} key={group.key}>
+                    <Zoom in timeout={600 + index * 80}>
+                      <Card sx={{
+                        borderRadius: 4,
+                        boxShadow: '0 12px 24px rgba(44, 62, 80, 0.1)',
+                        background: 'white',
+                        border: '1px solid rgba(195, 207, 226, 0.3)',
+                        height: '100%',
+                        transition: 'all 0.3s ease',
+                        '&:hover': {
+                          transform: 'translateY(-8px)',
+                          boxShadow: '0 20px 40px rgba(255, 107, 53, 0.15)',
+                          border: '1px solid rgba(255, 107, 53, 0.3)'
+                        }
+                      }}>
+                        <CardActionArea onClick={() => openCategory(group.key)} sx={{ height: '100%', p: 3 }}>
+                          <Stack spacing={2}>
+                            <Avatar sx={{
+                              width: 56,
+                              height: 56,
+                              background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
+                              boxShadow: '0 6px 12px rgba(255, 107, 53, 0.3)'
+                            }}>
+                              <LightbulbIcon />
+                            </Avatar>
+                            <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#2c3e50' }}>
+                              {group.title}
+                            </Typography>
+                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                              <Chip label={`${group.conceptCount} concept${group.conceptCount === 1 ? '' : 's'}`} size="small" />
+                              <Chip label={`${group.caseCount} case${group.caseCount === 1 ? '' : 's'}`} size="small" />
+                              <Chip label={`${group.questionCount} question${group.questionCount === 1 ? '' : 's'}`} size="small" />
+                            </Stack>
+                            <Typography variant="body2" sx={{ color: '#34495e', opacity: 0.8 }}>
+                              Open this category to view its subtopics, concepts, and case studies.
+                            </Typography>
+                          </Stack>
+                        </CardActionArea>
+                      </Card>
+                    </Zoom>
+                  </Grid>
+                ))}
+              </Grid>
+            </Box>
+          </Fade>
+        </Container>
+
+        {renderLessonFooter("Back to Topics", () => {
+          if (!enforceLock("topics")) setView("topics");
+        })}
+
+        {activeSessionDialog}
+      </Box>
+    );
+  }
+
+  /* ---------- CONCEPT page for a loaded topic ---------- */
+  if (view === "concept" && plan) {
+    return (
+      <Box sx={{
+        minHeight: '100vh',
+        background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
+        py: 4,
+        pb: 14
+      }}>
+        <Container maxWidth="lg">
+          <Fade in timeout={800}>
+            <Paper sx={{
+              p: 4,
+              borderRadius: 4,
+              boxShadow: '0 16px 32px rgba(44, 62, 80, 0.1)',
+              background: 'white',
+              border: '1px solid rgba(195, 207, 226, 0.3)'
+            }}>
+              <Paper sx={{
+                p: 2,
+                mb: 3,
+                borderRadius: 2,
+                background: 'linear-gradient(135deg, rgba(52, 152, 219, 0.1) 0%, rgba(52, 152, 219, 0.05) 100%)',
+                border: '1px solid rgba(52, 152, 219, 0.2)'
+              }}>
+                <Breadcrumbs>
+                  <Link
+                    underline="hover"
+                    onClick={goHome}
+                    sx={{
+                      cursor: "pointer",
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      color: '#3498db',
+                      '&:hover': { color: '#ff6b35' }
+                    }}
+                  >
+                    <HomeIcon fontSize="small" />
+                    Home
+                  </Link>
+                  <Link
+                    underline="hover"
+                    onClick={() => setView("topics")}
+                    sx={{
+                      cursor: "pointer",
+                      color: '#3498db',
+                      '&:hover': { color: '#ff6b35' }
+                    }}
+                  >
+                    {selectedSuper}
+                  </Link>
+                  <Link
+                    underline="hover"
+                    onClick={() => setView("categories")}
+                    sx={{
+                      cursor: "pointer",
+                      color: '#3498db',
+                      '&:hover': { color: '#ff6b35' }
+                    }}
+                  >
+                    {plan.topic_name}
+                  </Link>
+                  <Typography color="#2c3e50" sx={{ fontWeight: 'bold' }}>
+                    {currentCategoryGroup()?.title}
+                  </Typography>
+                </Breadcrumbs>
+              </Paper>
+
+              <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
+                <LightbulbIcon sx={{ fontSize: 32, color: '#ff6b35' }} />
+                <Typography variant="h4" sx={{ fontWeight: 'bold', color: '#2c3e50' }}>
+                  {currentCategoryGroup()?.title}
+                </Typography>
+              </Stack>
+
+              <Alert
+                severity="info"
+                sx={{
+                  mb: 3,
                   borderRadius: 2,
                   backgroundColor: 'rgba(52, 152, 219, 0.1)',
                   border: '1px solid rgba(52, 152, 219, 0.3)',
@@ -940,11 +1409,11 @@ export default function AdaptiveApp() {
               <Divider sx={{ mb: 3, borderColor: 'rgba(195, 207, 226, 0.5)' }} />
 
               <Grid container spacing={3}>
-                {plan.subtopics.map((st, index) => (
+                {currentCategoryItems().map((st, index) => (
                   <Grid item xs={12} key={st.subtopic_id}>
                     <Slide direction="up" in timeout={600 + index * 200}>
-                      <Paper sx={{ 
-                        p: 3, 
+                      <Paper sx={{
+                        p: 3,
                         borderRadius: 3,
                         border: '2px solid transparent',
                         background: 'linear-gradient(white, white) padding-box, linear-gradient(135deg, #ff6b35, #f7931e) border-box',
@@ -955,9 +1424,9 @@ export default function AdaptiveApp() {
                         }
                       }}>
                         <Stack direction="row" alignItems="center" spacing={2} sx={{ mb: 2 }}>
-                          <Avatar sx={{ 
-                            width: 32, 
-                            height: 32, 
+                          <Avatar sx={{
+                            width: 32,
+                            height: 32,
                             background: 'linear-gradient(135deg, #ff6b35, #f7931e)',
                             fontSize: 14,
                             fontWeight: 'bold',
@@ -968,9 +1437,18 @@ export default function AdaptiveApp() {
                           <Typography variant="h6" sx={{ fontWeight: 'bold', color: '#2c3e50' }}>
                             {st.subtopic_title}
                           </Typography>
+                          <Chip
+                            size="small"
+                            label={st.is_case ? "Case Study" : "Concept"}
+                            sx={{
+                              background: st.is_case ? 'rgba(155, 89, 182, 0.12)' : 'rgba(255, 107, 53, 0.12)',
+                              color: st.is_case ? '#8e44ad' : '#ff6b35',
+                              fontWeight: 'bold'
+                            }}
+                          />
                         </Stack>
-                        <Typography sx={{ 
-                          whiteSpace: "pre-line", 
+                        <Typography sx={{
+                          whiteSpace: "pre-line",
                           lineHeight: 1.7,
                           color: '#34495e'
                         }}>
@@ -985,91 +1463,9 @@ export default function AdaptiveApp() {
           </Fade>
         </Container>
 
-        <Paper
-          elevation={8}
-          sx={{
-            position: 'fixed',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.95) 100%)',
-            backdropFilter: 'blur(20px)',
-            borderTop: '1px solid rgba(195, 207, 226, 0.3)',
-            zIndex: 1000,
-            py: 0.75,
-            px: 3,
-          }}
-        >
-          <Container maxWidth="lg">
-            <Stack 
-              direction="row" 
-              spacing={3} 
-              sx={{ 
-                justifyContent: 'center',
-                alignItems: 'center'
-              }}
-            >
-              <Button 
-                variant="outlined" 
-                onClick={() => setView("topics")}
-                startIcon={<ArrowBackIcon />}
-                sx={{ 
-                  borderRadius: 25,
-                  px: 2.5,
-                  py: 0.5,
-                  borderColor: '#3498db',
-                  color: '#3498db',
-                  fontWeight: 'bold',
-                  borderWidth: '2px',
-                  textTransform: 'none',
-                  fontSize: '1rem',
-                  transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                  '&:hover': { 
-                    borderColor: '#3498db',
-                    background: 'rgba(52, 152, 219, 0.1)',
-                    borderWidth: '2px',
-                    transform: 'translateY(-2px)',
-                    boxShadow: '0 8px 25px rgba(52, 152, 219, 0.2)'
-                  }
-                }}
-              >
-                Back to Topics
-              </Button>
-              
-              <Box sx={{ 
-                height: 20, 
-                width: 1, 
-                background: 'linear-gradient(to bottom, transparent, rgba(195, 207, 226, 0.5), transparent)',
-                mx: 0.5
-              }} />
-              
-              <Button 
-                variant="contained" 
-                onClick={beginQuestions}
-                endIcon={<QuizIcon />}
-                sx={{ 
-                  borderRadius: 25,
-                  px: 3,
-                  py: 0.5,
-                  background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
-                  boxShadow: '0 8px 25px rgba(255, 107, 53, 0.3)',
-                  fontWeight: 'bold',
-                  textTransform: 'none',
-                  fontSize: '1.1rem',
-                  border: '2px solid transparent',
-                  transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                  '&:hover': {
-                    boxShadow: '0 12px 35px rgba(255, 107, 53, 0.4)',
-                    background: 'linear-gradient(135deg, #f7931e 0%, #ff6b35 100%)',
-                    transform: 'translateY(-3px)'
-                  }
-                }}
-              >
-                Start Questions
-              </Button>
-            </Stack>
-          </Container>
-        </Paper>
+        {renderLessonFooter("Back to Categories", () => setView("categories"))}
+
+        {activeSessionDialog}
       </Box>
     );
   }
@@ -1077,7 +1473,7 @@ export default function AdaptiveApp() {
   /* ---------- QUESTIONS view ---------- */
   if (view === "questions" && plan) {
     return (
-      <Box sx={{ 
+      <Box sx={{
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
         py: 2
@@ -1085,34 +1481,34 @@ export default function AdaptiveApp() {
         <Container maxWidth="lg">
           {!finished && (
             <Fade in timeout={600}>
-              <Paper sx={{ 
-                borderRadius: 4, 
+              <Paper sx={{
+                borderRadius: 4,
                 boxShadow: '0 20px 40px rgba(44, 62, 80, 0.1)',
                 background: 'white',
                 border: '1px solid rgba(195, 207, 226, 0.3)',
                 overflow: 'hidden'
               }}>
-                <Box sx={{ 
-                  background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)', 
-                  p: 3, 
-                  color: 'white' 
+                <Box sx={{
+                  background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
+                  p: 3,
+                  color: 'white'
                 }}>
-                  <Paper sx={{ 
-                    p: 1.5, 
-                    mb: 2, 
-                    borderRadius: 2, 
+                  <Paper sx={{
+                    p: 1.5,
+                    mb: 2,
+                    borderRadius: 2,
                     background: 'rgba(255,255,255,0.15)',
                     border: '1px solid rgba(255,255,255,0.2)'
                   }}>
                     <Breadcrumbs sx={{ '& .MuiBreadcrumbs-separator': { color: 'white' } }}>
-                      <Link 
-                        underline="hover" 
-                        onClick={goHome} 
-                        sx={{ 
-                          cursor: "pointer", 
-                          color: 'white', 
-                          display: 'flex', 
-                          alignItems: 'center', 
+                      <Link
+                        underline="hover"
+                        onClick={goHome}
+                        sx={{
+                          cursor: "pointer",
+                          color: 'white',
+                          display: 'flex',
+                          alignItems: 'center',
                           gap: 1,
                           '&:hover': { opacity: 0.8 }
                         }}
@@ -1120,22 +1516,22 @@ export default function AdaptiveApp() {
                         <HomeIcon fontSize="small" />
                         Home
                       </Link>
-                      <Link 
-                        underline="hover" 
-                        onClick={() => setView("topics")} 
-                        sx={{ 
-                          cursor: "pointer", 
+                      <Link
+                        underline="hover"
+                        onClick={() => setView("topics")}
+                        sx={{
+                          cursor: "pointer",
                           color: 'white',
                           '&:hover': { opacity: 0.8 }
                         }}
                       >
                         {selectedSuper}
                       </Link>
-                      <Link 
-                        underline="hover" 
-                        onClick={() => setView("concept")} 
-                        sx={{ 
-                          cursor: "pointer", 
+                      <Link
+                        underline="hover"
+                        onClick={openCurrentCategory}
+                        sx={{
+                          cursor: "pointer",
                           color: 'white',
                           '&:hover': { opacity: 0.8 }
                         }}
@@ -1153,38 +1549,38 @@ export default function AdaptiveApp() {
                         {currentSub().subtopic_title}
                       </Typography>
                     </Stack>
-                    <Chip 
+                    <Chip
                       label={`${Math.round(getProgress())}% Complete`}
-                      sx={{ 
-                        background: 'rgba(255,255,255,0.2)', 
+                      sx={{
+                        background: 'rgba(255,255,255,0.2)',
                         color: 'white',
                         fontWeight: 'bold',
                         border: '1px solid rgba(255,255,255,0.3)'
                       }}
                     />
                   </Stack>
-                  
-                  <LinearProgress 
-                    variant="determinate" 
-                    value={getProgress()} 
-                    sx={{ 
-                      mt: 2, 
-                      height: 8, 
+
+                  <LinearProgress
+                    variant="determinate"
+                    value={getProgress()}
+                    sx={{
+                      mt: 2,
+                      height: 8,
                       borderRadius: 4,
                       background: 'rgba(255,255,255,0.2)',
                       '& .MuiLinearProgress-bar': {
                         background: 'linear-gradient(90deg, #2ed573 0%, #1dd1a1 100%)',
                         borderRadius: 4
                       }
-                    }} 
+                    }}
                   />
                 </Box>
 
                 <Box sx={{ p: 3 }}>
-                  <Tabs 
-                    value={tab} 
-                    onChange={(_, v) => setTab(v)} 
-                    sx={{ 
+                  <Tabs
+                    value={tab}
+                    onChange={(_, v) => setTab(v)}
+                    sx={{
                       mb: 3,
                       '& .MuiTab-root': {
                         fontWeight: 'bold',
@@ -1206,8 +1602,8 @@ export default function AdaptiveApp() {
 
                   {tab === 0 && (
                     <Slide direction="right" in timeout={400}>
-                      <Paper sx={{ 
-                        p: 3, 
+                      <Paper sx={{
+                        p: 3,
                         borderRadius: 3,
                         background: 'linear-gradient(135deg, rgba(52, 152, 219, 0.1) 0%, rgba(52, 152, 219, 0.05) 100%)',
                         border: '1px solid rgba(52, 152, 219, 0.2)'
@@ -1218,8 +1614,8 @@ export default function AdaptiveApp() {
                             {isCase ? "Case Study Vignette" : "Core Concept"}
                             </Typography>
                         </Stack>
-                        <Typography sx={{ 
-                          whiteSpace: "pre-line", 
+                        <Typography sx={{
+                          whiteSpace: "pre-line",
                           lineHeight: 1.8,
                           fontSize: '1.1rem',
                           color: '#34495e'
@@ -1233,36 +1629,36 @@ export default function AdaptiveApp() {
                   {tab === 1 && mode === "question" && (
                     <Slide direction="left" in timeout={400}>
                       <Box>
-                        <Paper sx={{ 
-                          p: 3, 
-                          mb: 3, 
-                          borderRadius: 3, 
+                        <Paper sx={{
+                          p: 3,
+                          mb: 3,
+                          borderRadius: 3,
                           background: 'rgba(245, 247, 250, 0.7)',
                           border: '1px solid rgba(195, 207, 226, 0.3)'
                         }}>
                           <Typography variant="h6" sx={{ mb: 2, fontWeight: 'bold', color: '#2c3e50' }}>
                             Question
                           </Typography>
-                          <Typography sx={{ 
-                            mb: 3, 
-                            whiteSpace: "pre-line", 
+                          <Typography sx={{
+                            mb: 3,
+                            whiteSpace: "pre-line",
                             fontSize: '1.1rem',
                             lineHeight: 1.6,
                             color: '#34495e'
                           }}>
                             {currentStem()}
                           </Typography>
-                          
-                          <RadioGroup 
-                            value={choice} 
+
+                          <RadioGroup
+                            value={choice}
                             onChange={e => setChoice(e.target.value)}
                             sx={{ gap: 1 }}
                           >
                             {currentQ().choices.map(c => (
-                              <Paper 
+                              <Paper
                                 key={c.choice_index}
-                                sx={{ 
-                                  p: 2, 
+                                sx={{
+                                  p: 2,
                                   borderRadius: 2,
                                   border: choice === String(c.choice_index) ? '2px solid #ff6b35' : '2px solid transparent',
                                   background: choice === String(c.choice_index) ? 'rgba(255, 107, 53, 0.1)' : 'white',
@@ -1280,8 +1676,8 @@ export default function AdaptiveApp() {
                                   value={String(c.choice_index)}
                                   control={<Radio sx={{ color: '#ff6b35' }} disabled={awaitingAutoNext} />}
                                   label={c.choice_text}
-                                  sx={{ 
-                                    width: '100%', 
+                                  sx={{
+                                    width: '100%',
                                     margin: 0,
                                     '& .MuiFormControlLabel-label': {
                                       fontSize: '1rem',
@@ -1293,13 +1689,13 @@ export default function AdaptiveApp() {
                               </Paper>
                             ))}
                           </RadioGroup>
-                          
+
                           {result === "incorrect" && (
                             <Zoom in timeout={300}>
-                              <Alert 
-                                severity="error" 
-                                sx={{ 
-                                  mt: 2, 
+                              <Alert
+                                severity="error"
+                                sx={{
+                                  mt: 2,
                                   borderRadius: 2,
                                   backgroundColor: 'rgba(231, 76, 60, 0.1)',
                                   border: '1px solid rgba(231, 76, 60, 0.3)',
@@ -1347,13 +1743,13 @@ export default function AdaptiveApp() {
                               </Button>
                             </Stack>
                           )}
-                          
+
                           <Stack direction="row" justifyContent="center" sx={{ mt: 3 }}>
-                            <Button 
-                              variant="contained" 
-                              disabled={choice === null || awaitingAutoNext} 
+                            <Button
+                              variant="contained"
+                              disabled={choice === null || awaitingAutoNext}
                               onClick={submit}
-                              sx={{ 
+                              sx={{
                                 borderRadius: 3,
                                 px: 4,
                                 py: 1.5,
@@ -1435,9 +1831,9 @@ export default function AdaptiveApp() {
                           );
                         })()}
 
-                        <Paper sx={{ 
-                          p: 3, 
-                          mb: 3, 
+                        <Paper sx={{
+                          p: 3,
+                          mb: 3,
                           borderRadius: 3,
                           background: 'linear-gradient(135deg, rgba(46, 213, 115, 0.1) 0%, rgba(29, 209, 161, 0.1) 100%)',
                           border: '1px solid rgba(46, 213, 115, 0.3)'
@@ -1448,8 +1844,8 @@ export default function AdaptiveApp() {
                               Explanation
                             </Typography>
                           </Stack>
-                          <Typography sx={{ 
-                            whiteSpace: "pre-line", 
+                          <Typography sx={{
+                            whiteSpace: "pre-line",
                             lineHeight: 1.7,
                             fontSize: '1.1rem',
                             color: '#34495e'
@@ -1458,14 +1854,14 @@ export default function AdaptiveApp() {
                           </Typography>
                         </Paper>
 
-                        
+
 
                         <Stack direction="row" justifyContent="center">
-                          <Button 
-                            variant="contained" 
+                          <Button
+                            variant="contained"
                             onClick={proceed}
                             endIcon={<ArrowForwardIcon />}
-                            sx={{ 
+                            sx={{
                               borderRadius: 3,
                               px: 4,
                               py: 1.5,
@@ -1488,9 +1884,9 @@ export default function AdaptiveApp() {
 
                   {tab === 2 && (
                     <Slide direction="left" in timeout={400}>
-                      <Paper sx={{ 
-                        p: 3, 
-                        borderRadius: 3, 
+                      <Paper sx={{
+                        p: 3,
+                        borderRadius: 3,
                         background: 'linear-gradient(135deg, rgba(155, 89, 182, 0.1) 0%, rgba(155, 89, 182, 0.05) 100%)',
                         border: '1px solid rgba(155, 89, 182, 0.3)'
                       }}>
@@ -1506,9 +1902,9 @@ export default function AdaptiveApp() {
                           </Typography>
                         ) : (
                           (currentSub().references || []).map((r, i) => (
-                            <Paper key={i} sx={{ 
-                              p: 2, 
-                              mb: 2, 
+                            <Paper key={i} sx={{
+                              p: 2,
+                              mb: 2,
                               borderRadius: 2,
                               border: '1px solid rgba(189, 195, 199, 0.3)',
                               background: 'white'
@@ -1540,16 +1936,16 @@ export default function AdaptiveApp() {
 
           {finished && (
             <Zoom in timeout={800}>
-              <Paper sx={{ 
-                borderRadius: 4, 
+              <Paper sx={{
+                borderRadius: 4,
                 boxShadow: '0 20px 40px rgba(44, 62, 80, 0.1)',
                 background: 'white',
                 border: '1px solid rgba(195, 207, 226, 0.3)',
                 overflow: 'hidden'
               }}>
-                <Box sx={{ 
-                  background: 'linear-gradient(135deg, #2ed573 0%, #1dd1a1 100%)', 
-                  p: 4, 
+                <Box sx={{
+                  background: 'linear-gradient(135deg, #2ed573 0%, #1dd1a1 100%)',
+                  p: 4,
                   color: 'white',
                   textAlign: 'center'
                 }}>
@@ -1566,7 +1962,7 @@ export default function AdaptiveApp() {
                   <Typography variant="h5" sx={{ mb: 3, fontWeight: 'bold', textAlign: 'center', color: '#2c3e50' }}>
                     Your Learning Report
                   </Typography>
-                  
+
                   {loadingReport && (
                     <Stack direction="row" spacing={3} justifyContent="center" sx={{ py: 4 }}>
                       <CircularProgress size={32} sx={{ color: '#ff6b35' }} />
@@ -1575,21 +1971,21 @@ export default function AdaptiveApp() {
                       </Typography>
                     </Stack>
                   )}
-                  
+
                   {!loadingReport && reportMd && (
                     <Fade in timeout={600}>
                       <Box>
-                        <Paper sx={{ 
-                          p: 3, 
-                          mb: 3, 
+                        <Paper sx={{
+                          p: 3,
+                          mb: 3,
                           borderRadius: 3,
                           background: 'linear-gradient(135deg, rgba(255, 107, 53, 0.05) 0%, rgba(247, 147, 30, 0.05) 100%)',
                           border: '1px solid rgba(255, 107, 53, 0.2)'
                         }}>
                           <Box
-                            sx={{ 
+                            sx={{
                               whiteSpace: "pre-line",
-                              '& h1, & h2, & h3': { 
+                              '& h1, & h2, & h3': {
                                 color: '#ff6b35',
                                 fontWeight: 'bold'
                               },
@@ -1614,14 +2010,14 @@ export default function AdaptiveApp() {
                             variant="outlined"
                             onClick={() => downloadMarkdown(`session_report_${sessionId}.md`, reportMd)}
                             startIcon={<DownloadIcon />}
-                            sx={{ 
+                            sx={{
                               borderRadius: 3,
                               px: 3,
                               py: 1.5,
                               borderColor: '#9b59b6',
                               color: '#9b59b6',
                               fontWeight: 'bold',
-                              '&:hover': { 
+                              '&:hover': {
                                 borderColor: '#9b59b6',
                                 background: 'rgba(155, 89, 182, 0.1)'
                               }
@@ -1629,32 +2025,32 @@ export default function AdaptiveApp() {
                           >
                             Download Report
                           </Button>
-                          
-                          <Button 
+
+                          <Button
                             variant="outlined"
-                            onClick={() => setView("concept")}
+                            onClick={() => setView("categories")}
                             startIcon={<BookIcon />}
-                            sx={{ 
+                            sx={{
                               borderRadius: 3,
                               px: 3,
                               py: 1.5,
                               borderColor: '#3498db',
                               color: '#3498db',
                               fontWeight: 'bold',
-                              '&:hover': { 
+                              '&:hover': {
                                 borderColor: '#3498db',
                                 background: 'rgba(52, 152, 219, 0.1)'
                               }
                             }}
                           >
-                            Review Concepts
+                            Review Categories
                           </Button>
-                          
-                          <Button 
+
+                          <Button
                             variant="contained"
                             onClick={goHome}
                             startIcon={<HomeIcon />}
-                            sx={{ 
+                            sx={{
                               borderRadius: 3,
                               px: 4,
                               py: 1.5,
@@ -1678,6 +2074,8 @@ export default function AdaptiveApp() {
             </Zoom>
           )}
         </Container>
+
+        {activeSessionDialog}
       </Box>
     );
   }
@@ -1685,7 +2083,7 @@ export default function AdaptiveApp() {
   /* ---------- DASHBOARD VIEW ---------- */
   if (view === "dashboard") {
     return (
-      <Box sx={{ 
+      <Box sx={{
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
         py: 4
@@ -1693,22 +2091,22 @@ export default function AdaptiveApp() {
         <Container maxWidth="lg">
           <Fade in timeout={800}>
             <Box>
-              <Paper sx={{ 
-                p: 2, 
-                mb: 3, 
-                borderRadius: 3, 
+              <Paper sx={{
+                p: 2,
+                mb: 3,
+                borderRadius: 3,
                 background: 'white',
                 border: '1px solid rgba(195, 207, 226, 0.3)',
                 boxShadow: '0 4px 12px rgba(44, 62, 80, 0.08)'
               }}>
                 <Breadcrumbs>
-                  <Link 
-                    underline="hover" 
-                    onClick={goHome} 
-                    sx={{ 
-                      cursor: "pointer", 
-                      display: 'flex', 
-                      alignItems: 'center', 
+                  <Link
+                    underline="hover"
+                    onClick={goHome}
+                    sx={{
+                      cursor: "pointer",
+                      display: 'flex',
+                      alignItems: 'center',
                       gap: 1,
                       color: '#3498db',
                       '&:hover': { color: '#ff6b35' }
@@ -1731,8 +2129,8 @@ export default function AdaptiveApp() {
               </Stack>
 
               {dashboardRows.length === 0 ? (
-                <Paper sx={{ 
-                  p: 4, 
+                <Paper sx={{
+                  p: 4,
                   borderRadius: 4,
                   textAlign: 'center',
                   background: 'white',
@@ -1747,8 +2145,8 @@ export default function AdaptiveApp() {
                   {dashboardRows.map((row, index) => (
                     <Grid item xs={12} key={row.session_id}>
                       <Zoom in timeout={600 + index * 100}>
-                        <Paper sx={{ 
-                          p: 3, 
+                        <Paper sx={{
+                          p: 3,
                           borderRadius: 3,
                           background: 'white',
                           border: '1px solid rgba(195, 207, 226, 0.3)',
@@ -1770,9 +2168,9 @@ export default function AdaptiveApp() {
                                 <Typography variant="body2" sx={{ color: '#34495e' }}>
                                   Session ID: {row.session_id}
                                 </Typography>
-                                <Chip 
+                                <Chip
                                   label={row.status === 'completed' ? 'Completed' : 'In Progress'}
-                                  sx={{ 
+                                  sx={{
                                     width: 'fit-content',
                                     background: row.status === 'completed' ? 'linear-gradient(135deg, #2ed573 0%, #1dd1a1 100%)' : 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
                                     color: 'white',
@@ -1784,10 +2182,10 @@ export default function AdaptiveApp() {
                                     <Typography variant="body2" sx={{ mb: 0.5, fontWeight: 'bold', color: '#2c3e50' }}>
                                       Score: {row.score_pct}%
                                     </Typography>
-                                    <LinearProgress 
-                                      variant="determinate" 
+                                    <LinearProgress
+                                      variant="determinate"
                                       value={row.score_pct}
-                                      sx={{ 
+                                      sx={{
                                         borderRadius: 2,
                                         height: 6,
                                         background: 'rgba(195, 207, 226, 0.3)',
@@ -1803,10 +2201,10 @@ export default function AdaptiveApp() {
                             </Grid>
                             <Grid item xs={12} sm={6}>
                               <Stack direction="row" spacing={2} justifyContent="flex-end">
-                                <Button 
+                                <Button
                                   variant="outlined"
                                   onClick={() => startTopic(row.topic_id)}
-                                  sx={{ 
+                                  sx={{
                                     borderRadius: 2,
                                     px: 2,
                                     py: 1,
@@ -1814,7 +2212,7 @@ export default function AdaptiveApp() {
                                     color: '#3498db',
                                     fontWeight: 'bold',
                                     textTransform: 'none',
-                                    '&:hover': { 
+                                    '&:hover': {
                                       borderColor: '#3498db',
                                       background: 'rgba(52, 152, 219, 0.1)'
                                     }
@@ -1823,15 +2221,18 @@ export default function AdaptiveApp() {
                                   Take Again
                                 </Button>
                                 {row.status === "completed" && (
-                                  <Button 
+                                  <Button
                                     variant="contained"
                                     onClick={async () => {
                                       try {
                                         const { data: reportData } = await axios.get(`/api/report/${row.session_id}`);
                                         const { data: planJson } = await axios.get(`/api/lesson/${row.topic_id}/${USER_ID}`);
+                                        const groups = buildCategoryGroups(planJson);
                                         setReportMd(reportData.markdown);
                                         setPlan(planJson);
                                         setTopicId(row.topic_id);
+                                        setSelectedSuper(planJson?.supertopic || "");
+                                        setSelectedCategory(groups[0]?.key || "");
                                         setFinished(true);
                                         // Don't set sessionId - this is a completed session, not an active one
                                         // setSessionId(row.session_id);
@@ -1843,7 +2244,7 @@ export default function AdaptiveApp() {
                                         setLoading(false);
                                       }
                                     }}
-                                    sx={{ 
+                                    sx={{
                                       borderRadius: 2,
                                       px: 2,
                                       py: 1,
@@ -1877,10 +2278,10 @@ export default function AdaptiveApp() {
   }
 
   return (
-    <Box sx={{ 
-      display: 'flex', 
-      justifyContent: 'center', 
-      alignItems: 'center', 
+    <Box sx={{
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
       minHeight: '100vh',
       background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)'
     }}>

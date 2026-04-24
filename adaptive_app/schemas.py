@@ -15,8 +15,8 @@ class ReferenceOut(ConfigExtraIgnore):
 
 class ChoiceOut(ConfigExtraIgnore):
     choice_index: int
-    choice_text: str   
-    rationale: str | None = None 
+    choice_text: str
+    rationale: str | None = None
 class VariantOut(ConfigExtraIgnore):
     variant_no: int
     stem: str
@@ -36,6 +36,7 @@ class SubtopicOut(ConfigExtraIgnore):
     subtopic_id: UUID
     subtopic_title: str              # ← matches JSON key
     sequence_no: int | None = None
+    category: str | None = None
     concept: str
     references: List[ReferenceOut]
     questions: List[QuestionOut]
@@ -44,6 +45,7 @@ class SubtopicOut(ConfigExtraIgnore):
 class StudyPlanOut(ConfigExtraIgnore):
     topic_id: UUID
     topic_name: str
+    supertopic: str | None = None
     percentage_complete: float = Field(0, description="Placeholder")
     subtopics: List[SubtopicOut]
 # ---------- Session / answers ----------
@@ -68,7 +70,7 @@ class SessionReport(BaseModel):
     score_pct: float
     strong_areas: List[str]
     focus_areas: List[str]
-    
+
 class ReportOut(BaseModel):
     markdown: str
 # ---------- Education Platform integration ----------
