@@ -90,6 +90,25 @@ def _compute_launch_signature(data: Dict[str, Any]) -> str:
 def api_supertopics():
     return list_supertopics()
 
+
+@app.get("/api/users/{user_id}/credits")
+def api_user_credits(user_id: UUID, db: Session = Depends(get_db)):
+    user: User | None = db.query(User).get(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "user_id": str(user.user_id),
+        "credit_balance": user.credit_balance if user.credit_balance is not None else 0,
+    }
+
+
+def _topic_credit_cost(db: Session, topic_id: UUID) -> int:
+    topic_row: Topic | None = db.query(Topic).get(topic_id)
+    if topic_row and topic_row.credits is not None:
+        return int(topic_row.credits)
+    return 1
+
+
 # main.py
 
 @app.get("/api/topics")
@@ -104,7 +123,14 @@ def api_topics(
     - If user_id is omitted: returns all topics (backwards compatible).
     - If user_id is provided: only topics where topic.credits <= user.credit_balance.
     """
-    topics = list_topics(supertopic)  # [{topic_id, topic_name, supertopic}, …]
+    topics = []
+    for topic in list_topics(supertopic):  # [{topic_id, topic_name, supertopic}, …]
+        row = dict(topic)
+        try:
+            row["credits"] = _topic_credit_cost(db, UUID(str(row["topic_id"])))
+        except Exception:
+            row["credits"] = 1
+        topics.append(row)
 
     if user_id is None:
         return topics
@@ -122,8 +148,7 @@ def api_topics(
             # If topic_id can't be parsed, skip or treat as cost 1
             continue
 
-        topic_row: Topic | None = db.query(Topic).get(tid)
-        credits = topic_row.credits if topic_row and topic_row.credits is not None else 1
+        credits = int(t.get("credits") or _topic_credit_cost(db, tid))
 
         if credits <= user.credit_balance:
             allowed.append(t)
