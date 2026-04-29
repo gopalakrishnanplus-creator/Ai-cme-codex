@@ -22,7 +22,8 @@ import {
   EmojiEvents as TrophyIcon,
   Timeline as TimelineIcon,
   Dashboard as DashboardIcon,
-  ExitToApp as ExitToAppIcon
+  ExitToApp as ExitToAppIcon,
+  AccountBalanceWallet as WalletIcon
 } from "@mui/icons-material";
 
 import { marked } from "marked";
@@ -152,6 +153,7 @@ export default function AdaptiveApp() {
 
   /* ---------- loading states ---------- */
   const [loading, setLoading] = useState(false);
+  const [creditBalance, setCreditBalance] = useState(null);
 
   /* ---------- resume session state ---------- */
   const [resumeData, setResumeData] = useState([]);
@@ -196,6 +198,28 @@ export default function AdaptiveApp() {
     return () => {
       cancelled = true;
     };
+  }, [USER_ID]);
+
+  const refreshCreditBalance = async () => {
+    if (!USER_ID) {
+      setCreditBalance(null);
+      return null;
+    }
+
+    try {
+      const { data } = await axios.get(`/api/api/users/${USER_ID}/credits`);
+      const nextBalance = Number(data?.credit_balance ?? 0);
+      setCreditBalance(Number.isFinite(nextBalance) ? nextBalance : 0);
+      return nextBalance;
+    } catch (error) {
+      console.error("Error loading credit balance:", error);
+      setCreditBalance(null);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    refreshCreditBalance();
   }, [USER_ID]);
 
 
@@ -328,7 +352,10 @@ export default function AdaptiveApp() {
     axios.get(`/api/api/report/${sessionId}`)
       .then(r => setReportMd(r.data.markdown))
       .catch(() => setReportMd("**Error:** unable to generate report."))
-      .finally(() => setLoadingReport(false));
+      .finally(() => {
+        setLoadingReport(false);
+        refreshCreditBalance();
+      });
   }, [finished, sessionId]);
 
   useEffect(() => {
@@ -782,6 +809,44 @@ export default function AdaptiveApp() {
     return () => clearAutoNextTimers();
   }, []);
 
+  const formatCredits = (value) => {
+    const credits = Number(value);
+    const safeCredits = Number.isFinite(credits) ? credits : 1;
+    return `${safeCredits} credit${safeCredits === 1 ? "" : "s"}`;
+  };
+
+  const topicCost = (topic) => {
+    const credits = Number(topic?.credits);
+    return Number.isFinite(credits) ? credits : 1;
+  };
+
+  const renderCreditBalance = () => (
+    <Chip
+      icon={<WalletIcon />}
+      label={
+        creditBalance === null
+          ? "Credits available: --"
+          : `${formatCredits(creditBalance)} available`
+      }
+      sx={{
+        background: 'white',
+        color: '#2c3e50',
+        border: '1px solid rgba(255, 107, 53, 0.35)',
+        boxShadow: '0 4px 12px rgba(44, 62, 80, 0.08)',
+        fontWeight: 'bold',
+        '& .MuiChip-icon': {
+          color: '#ff6b35'
+        }
+      }}
+    />
+  );
+
+  const renderTopCreditBar = (sx = {}) => (
+    <Stack direction="row" justifyContent="flex-end" sx={{ mb: 2, ...sx }}>
+      {renderCreditBalance()}
+    </Stack>
+  );
+
   const renderLessonFooter = (backLabel, onBack) => (
     <Paper
       elevation={8}
@@ -926,9 +991,13 @@ export default function AdaptiveApp() {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
+        position: 'relative',
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)'
       }}>
+        <Box sx={{ position: 'absolute', top: 24, right: 24 }}>
+          {renderCreditBalance()}
+        </Box>
         <Stack alignItems="center" spacing={3}>
           <CircularProgress size={60} sx={{ color: '#ff6b35' }} />
           <Typography variant="h6" sx={{ color: '#2c3e50', fontWeight: 'bold' }}>Loading...</Typography>
@@ -946,6 +1015,7 @@ export default function AdaptiveApp() {
         py: 4
       }}>
         <Container maxWidth="md">
+          {renderTopCreditBar()}
           <Fade in timeout={800}>
             <Paper sx={{
               p: 4,
@@ -1063,6 +1133,7 @@ export default function AdaptiveApp() {
                   spacing={1.5}
                   sx={{ width: { xs: "100%", md: "auto" } }}
                 >
+                  {renderCreditBalance()}
                   <Button
                     variant="outlined"
                     startIcon={<ExitToAppIcon />}
@@ -1168,6 +1239,7 @@ export default function AdaptiveApp() {
         py: 4
       }}>
         <Container maxWidth="lg">
+          {renderTopCreditBar()}
           <Slide direction="right" in timeout={600}>
             <Box>
               <Paper sx={{
@@ -1238,15 +1310,26 @@ export default function AdaptiveApp() {
                             <Typography variant="body2" sx={{ color: '#34495e', textAlign: 'center', opacity: 0.8 }}>
                               Start with concept overview, then practice with questions
                             </Typography>
-                            <Chip
-                              label="Start Learning"
-                              sx={{
-                                background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
-                                color: 'white',
-                                fontWeight: 'bold',
-                                boxShadow: '0 4px 8px rgba(255, 107, 53, 0.3)'
-                              }}
-                            />
+                            <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap" useFlexGap>
+                              <Chip
+                                label={`Attempt cost: ${formatCredits(topicCost(t))}`}
+                                sx={{
+                                  background: 'rgba(52, 152, 219, 0.1)',
+                                  color: '#2c3e50',
+                                  border: '1px solid rgba(52, 152, 219, 0.25)',
+                                  fontWeight: 'bold'
+                                }}
+                              />
+                              <Chip
+                                label="Start Learning"
+                                sx={{
+                                  background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
+                                  color: 'white',
+                                  fontWeight: 'bold',
+                                  boxShadow: '0 4px 8px rgba(255, 107, 53, 0.3)'
+                                }}
+                              />
+                            </Stack>
                           </Stack>
                         </CardActionArea>
                       </Card>
@@ -1271,6 +1354,7 @@ export default function AdaptiveApp() {
         pb: 14
       }}>
         <Container maxWidth="lg">
+          {renderTopCreditBar()}
           <Fade in timeout={800}>
             <Box>
               <Paper sx={{
@@ -1404,6 +1488,7 @@ export default function AdaptiveApp() {
         pb: 14
       }}>
         <Container maxWidth="lg">
+          {renderTopCreditBar()}
           <Fade in timeout={800}>
             <Paper sx={{
               p: 4,
@@ -1558,6 +1643,7 @@ export default function AdaptiveApp() {
         py: 2
       }}>
         <Container maxWidth="lg">
+          {renderTopCreditBar()}
           {!finished && (
             <Fade in timeout={600}>
               <Paper sx={{
@@ -2168,6 +2254,7 @@ export default function AdaptiveApp() {
         py: 4
       }}>
         <Container maxWidth="lg">
+          {renderTopCreditBar()}
           <Fade in timeout={800}>
             <Box>
               <Paper sx={{
@@ -2361,9 +2448,13 @@ export default function AdaptiveApp() {
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
+      position: 'relative',
       minHeight: '100vh',
       background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)'
     }}>
+      <Box sx={{ position: 'absolute', top: 24, right: 24 }}>
+        {renderCreditBalance()}
+      </Box>
       <Typography variant="h6" sx={{ color: '#2c3e50', fontWeight: 'bold' }}>
         Something went wrong. Please try again.
       </Typography>
