@@ -189,6 +189,8 @@ AZURE_OAI_ENDPOINT = "https://azure-140709.openai.azure.com/"
 AZURE_OAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 DEPLOYMENT = "gpt-4o"
 AZURE_OAI_API_VERSION = "2024-02-15-preview"
+CONCEPT_MIN_BULLETS = 3
+CONCEPT_MAX_BULLETS = 4
 
 oai = AzureOpenAI(
     api_key=AZURE_OAI_KEY,
@@ -245,20 +247,59 @@ def _make_outline(subtopic_title: str) -> str:
             "for bedside decision-making")
 
 def _looks_clipped(txt: str) -> bool:
-    if txt and len(txt.strip()) < 400:
+    t = (txt or "").strip()
+    if not t:
         return True
-    
-    t = txt.strip()
+
+    if len(t) < 400:
+        return True
+
     if t[-1] not in ".!?":
         return True
-    
+
     if re.search(r"(,\s*)?$", t[-3:]):
         return True
-    
+
     if t.count("(") != t.count(")"):
         return True
-    
+
     return False
+
+def _bullet_count(txt: str) -> int:
+    return len(re.findall(r"(?m)^\s*[-*]\s+\*\*[^*\n]{2,80}:\*\*\s+\S", txt or ""))
+
+def _has_bullet_shape(txt: str) -> bool:
+    count = _bullet_count(txt)
+    return CONCEPT_MIN_BULLETS <= count <= CONCEPT_MAX_BULLETS
+
+def _clean_bullet_text(txt: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (txt or "").strip())
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return cleaned.strip()
+
+def _format_concept_bullets(payload: dict) -> str:
+    bullets = payload.get("bullets") if isinstance(payload, dict) else None
+    if not isinstance(bullets, list):
+        return ""
+
+    lines: list[str] = []
+    for item in bullets[:CONCEPT_MAX_BULLETS]:
+        if not isinstance(item, dict):
+            continue
+        label = _clean_bullet_text(str(item.get("label") or ""))
+        text = _clean_bullet_text(str(item.get("text") or ""))
+        if not label or not text:
+            continue
+        label = label.strip("*:- ")
+        if len(label) > 80:
+            label = label[:80].rstrip()
+        if text[-1] not in ".!?":
+            text += "."
+        lines.append(f"- **{label}:** {text}")
+
+    if len(lines) < CONCEPT_MIN_BULLETS:
+        return ""
+    return "\n".join(lines)
 
 # Case amenability assessment
 CASE_AMENABLE_MIN_CONF = int(os.getenv("CASE_AMENABLE_MIN_CONF", "55"))
@@ -423,40 +464,65 @@ def _assess_case_amenable_gpt(topic: str, subtopic_title: str, concept_text: str
         logging.exception("Case amenability check failed")
         return False, 0, {"amenable": False, "confidence": 0, "why": "AI call failed", "suggested_case_focus": []}
 
-def _call_gpt(topic: str, subtopic: str, snippets: list[str], disambiguation_hint: str = "") -> str:
+def _call_gpt(
+    topic: str,
+    subtopic: str,
+    snippets: list[str],
+    disambiguation_hint: str = "",
+    formatting_hint: str = "",
+) -> str:
     joined = "\n".join(snippets)[:MAX_CHARS]
     outline = _make_outline(subtopic)
     
     disambig_instruction = ""
     if disambiguation_hint:
         disambig_instruction = f"\n• DISAMBIGUATION: {disambiguation_hint}\n"
-    
+
+    retry_instruction = ""
+    if formatting_hint:
+        retry_instruction = f"\n• FORMAT RETRY: {formatting_hint}\n"
+
     user = f"""
-Rewrite the SOURCE into a single coherent paragraph (≈250–350 words)
-for paediatric post-graduates. You MUST:
+Rewrite the SOURCE into 3 or 4 high-yield labelled bullets for paediatric post-graduates.
+Each bullet must contain 2–4 complete sentences, and the total output should be about 260–380 words when SOURCE supports that depth.
+You MUST:
 • Preserve every named threshold, dose, duration, sensitivity/specificity value, and timing window verbatim if present.
-• Remove bullets/odd markers; write complete sentences only.
+• Preserve named guidelines, programs, indicators, diagnostic criteria, contraindications, caveats, follow-up/escalation triggers, and India-specific context when present.
+• Do not compress away clinically useful examples or qualifiers just to make bullets shorter.
+• Use labelled bullets such as "Core concept", "Evidence/guidelines", "Clinical application", and "Safety/follow-up"; adapt labels only when a different source-backed label is clearer.
+• Do not use nested bullets, sub-bullets, tables, or headings outside the bullet labels.
 • Organise content as: {outline}.
 • Stay strictly within the sub-topic "{subtopic}"; no off-topic drift.
 • Keep the framing strictly paediatric; exclude pregnancy/lactation/adult-only contexts unless explicitly present in the sub-topic title.
-• If a required element in the outline is not present in SOURCE, write "Not specified in source." Do not invent content.
-• Do NOT invent facts not present in source.{disambig_instruction}
+• If an outline element is absent from SOURCE, omit that element and use other source-backed material; do not write placeholders like "Not specified in source."
+• Do NOT invent facts not present in source.{disambig_instruction}{retry_instruction}
+
+Return JSON only in this exact shape:
+{{"bullets":[{{"label":"Core concept","text":"2–4 complete sentences."}},{{"label":"Clinical application","text":"2–4 complete sentences."}},{{"label":"Safety/follow-up","text":"2–4 complete sentences."}}]}}
+
 — SOURCE TEXT —
 {joined}
 — END SOURCE —
 """.strip()
-    
+
     rsp = oai.chat.completions.create(
         model=DEPLOYMENT,
         temperature=0.35,
         max_tokens=900,
         messages=[
-            {"role": "system", "content": "You are an expert paediatric writer."},
+            {"role": "system", "content": "You are an expert paediatric writer. Return JSON only."},
             {"role": "user", "content": user},
         ],
+        response_format={"type": "json_object"},
     )
-    
-    return rsp.choices[0].message.content.strip()
+
+    try:
+        payload = json.loads(rsp.choices[0].message.content)
+    except Exception:
+        logging.exception("Concept rewrite returned non-JSON content")
+        return ""
+
+    return _format_concept_bullets(payload)
 
 # ─────────────────── Main entry ─────────────────────────────
 def main(msg: func.QueueMessage) -> None:
@@ -503,12 +569,16 @@ def main(msg: func.QueueMessage) -> None:
     # Ask GPT to rewrite
     paragraph = _call_gpt(topic_name, sub_title, [raw_txt])
     
-    if _looks_clipped(paragraph):
-        logging.warning("Concept looks clipped -> retrying once")
+    if _looks_clipped(paragraph) or not _has_bullet_shape(paragraph):
+        logging.warning("Concept looks clipped or incorrectly formatted -> retrying once")
         paragraph = _call_gpt(
             topic_name,
             sub_title,
-            [raw_txt + "\n\n(Ensure the rewrite ends with a complete sentence and no hanging lists.)"],
+            [raw_txt],
+            formatting_hint=(
+                "Return exactly 3 or 4 top-level markdown bullets after JSON rendering. "
+                "Each bullet needs a short label and dense source-backed sentences; preserve the full educational substance."
+            ),
         )
     
     if not paragraph or len(paragraph) < 400:

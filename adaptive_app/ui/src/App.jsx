@@ -36,6 +36,10 @@ function downloadMarkdown(filename, contents) {
   URL.revokeObjectURL(url);
 }
 
+function markdownMarkup(contents) {
+  return { __html: marked.parse(contents || "") };
+}
+
 /* === NEW: Compute next unanswered from snapshot attempts === */
 function nextCursorFromAttempts(planJson, snapshot) {
   const attempts = snapshot?.attempts || [];
@@ -1783,13 +1787,17 @@ export default function AdaptiveApp() {
                             }}
                           />
                         </Stack>
-                        <Typography sx={{
-                          whiteSpace: "pre-line",
+                        <Box sx={{
                           lineHeight: 1.7,
-                          color: '#34495e'
-                        }}>
-                          {st.concept}
-                        </Typography>
+                          color: '#34495e',
+                          '& p': { m: 0 },
+                          '& ul': { pl: 3, my: 0 },
+                          '& li': { mb: 1.25 },
+                          '& li:last-child': { mb: 0 },
+                          '& strong': { color: '#2c3e50' }
+                        }}
+                        dangerouslySetInnerHTML={markdownMarkup(st.concept)}
+                        />
                       </Paper>
                     </Slide>
                   </Grid>
@@ -1951,14 +1959,18 @@ export default function AdaptiveApp() {
                             {isCase ? "Case Study Vignette" : "Core Concept"}
                             </Typography>
                         </Stack>
-                        <Typography sx={{
-                          whiteSpace: "pre-line",
+                        <Box sx={{
                           lineHeight: 1.8,
                           fontSize: '1.1rem',
-                          color: '#34495e'
-                        }}>
-                          {currentSub().concept}
-                        </Typography>
+                          color: '#34495e',
+                          '& p': { m: 0 },
+                          '& ul': { pl: 3, my: 0 },
+                          '& li': { mb: 1.5 },
+                          '& li:last-child': { mb: 0 },
+                          '& strong': { color: '#2c3e50' }
+                        }}
+                        dangerouslySetInnerHTML={markdownMarkup(currentSub().concept)}
+                        />
                       </Paper>
                     </Slide>
                   )}
