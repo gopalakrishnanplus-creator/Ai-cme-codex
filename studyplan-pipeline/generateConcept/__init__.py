@@ -432,17 +432,14 @@ def _call_gpt(topic: str, subtopic: str, snippets: list[str], disambiguation_hin
         disambig_instruction = f"\n• DISAMBIGUATION: {disambiguation_hint}\n"
     
     user = f"""
-Rewrite the SOURCE into concise, study-friendly notes for paediatric post-graduates.
-Use plain text with short section labels and hyphen bullets, not dense paragraphs.
-You MUST:
+Rewrite the SOURCE into a single coherent paragraph (≈250–350 words)
+for paediatric post-graduates. You MUST:
 • Preserve every named threshold, dose, duration, sensitivity/specificity value, and timing window verbatim if present.
-• Use 3-4 short sections with labels such as "Core idea:", "High-yield points:", "Clinical application:", and "Quick review:".
-• Use 8-12 bullets total; each bullet should cover one study point and stay under 30 words where possible.
-• Start every bullet with "- " and end every bullet with a complete sentence.
-• Organise content around: {outline}.
+• Remove bullets/odd markers; write complete sentences only.
+• Organise content as: {outline}.
 • Stay strictly within the sub-topic "{subtopic}"; no off-topic drift.
 • Keep the framing strictly paediatric; exclude pregnancy/lactation/adult-only contexts unless explicitly present in the sub-topic title.
-• If a required element in the outline is not present in SOURCE, write a brief bullet: "- Not specified in source: <missing element>."
+• If a required element in the outline is not present in SOURCE, write "Not specified in source." Do not invent content.
 • Do NOT invent facts not present in source.{disambig_instruction}
 — SOURCE TEXT —
 {joined}
@@ -511,7 +508,7 @@ def main(msg: func.QueueMessage) -> None:
         paragraph = _call_gpt(
             topic_name,
             sub_title,
-            [raw_txt + "\n\n(Ensure every bullet is complete and the final bullet ends with a complete sentence.)"],
+            [raw_txt + "\n\n(Ensure the rewrite ends with a complete sentence and no hanging lists.)"],
         )
     
     if not paragraph or len(paragraph) < 400:

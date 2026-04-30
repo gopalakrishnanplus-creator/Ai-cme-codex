@@ -102,30 +102,14 @@ def _dedupe_common_sentences(subs: list[dict]) -> None:
     for sub in subs:
         if _title_allows_common_boiler(sub.get("subtopic_title", "")):
             continue
-
-        original = sub.get("concept", "")
-        lines = original.splitlines()
-        rebuilt: list[str] = []
-
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                rebuilt.append(line)
+        
+        kept = []
+        for s in _sentences(sub.get("concept", "")):
+            if freq.get(sig(s), 0) >= 3:
                 continue
-
-            if stripped.endswith(":") and not stripped.startswith(("-", "*", "•")):
-                rebuilt.append(line)
-                continue
-
-            bullet = re.match(r"^([-*•]\s+)(.*)$", stripped)
-            prefix = bullet.group(1) if bullet else ""
-            body = bullet.group(2) if bullet else stripped
-            kept = [s for s in _sentences(body) if freq.get(sig(s), 0) < 3]
-            if kept:
-                rebuilt.append(line[:len(line) - len(line.lstrip())] + prefix + " ".join(kept))
-
-        cleaned = "\n".join(rebuilt).strip()
-        sub["concept"] = cleaned if cleaned else original
+            kept.append(s)
+        
+        sub["concept"] = " ".join(kept) if kept else sub.get("concept", "")
 
 def _all_subtopics_done(topic_id: str) -> bool:
     with pyodbc.connect(DB_CONN) as con:
