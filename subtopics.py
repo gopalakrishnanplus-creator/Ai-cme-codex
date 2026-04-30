@@ -5,8 +5,7 @@ AZURE_STORAGE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=cm
 
 QUEUE_NAME = "subtopic-queue"
 subtopic_ids = [
- "42AB8F44-1B86-4046-9322-D13B0C982674",
- "BF80D369-1EF0-4248-B796-47AF300B250E"
+ "2983E160-E3F4-41BF-850C-BFC0BB49D864"
 ]
 queue = QueueClient.from_connection_string(
     AZURE_STORAGE_CONNECTION_STRING,
