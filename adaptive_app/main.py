@@ -511,7 +511,8 @@ def api_dashboard(user_id: UUID, db: Session = Depends(get_db)):
     for s in q:
         sid = str(s.session_id)
         plan = load_plan(s.topic_id)
-        is_unfinished = (
+        is_terminal = str(s.status or "").lower() in {"completed", "terminated"}
+        is_unfinished = (not is_terminal) and (
             sid.lower() in unfinished_session_ids
             or (not unfinished_session_ids and str(s.topic_id).lower() in unfinished_topic_ids)
         )
