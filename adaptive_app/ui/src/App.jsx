@@ -1395,6 +1395,7 @@ export default function AdaptiveApp() {
                         background: 'white',
                         border: '1px solid rgba(195, 207, 226, 0.3)',
                         height: "100%",
+                        display: 'flex',
                         transition: 'all 0.3s ease',
                         '&:hover': {
                           transform: 'translateY(-8px)',
@@ -1402,8 +1403,17 @@ export default function AdaptiveApp() {
                           border: '1px solid rgba(255, 107, 53, 0.3)'
                         }
                       }}>
-                        <CardActionArea onClick={() => startTopic(t.topic_id)} sx={{ height: "100%", p: 3 }}>
-                          <Stack alignItems="center" spacing={2}>
+                        <CardActionArea
+                          onClick={() => startTopic(t.topic_id)}
+                          sx={{
+                            height: "100%",
+                            minHeight: 304,
+                            p: 3,
+                            display: 'flex',
+                            alignItems: 'stretch'
+                          }}
+                        >
+                          <Stack alignItems="center" spacing={2} sx={{ width: '100%', height: '100%' }}>
                             <Avatar sx={{
                               width: 56,
                               height: 56,
@@ -1413,13 +1423,38 @@ export default function AdaptiveApp() {
                             }}>
                               <BookIcon />
                             </Avatar>
-                            <Typography variant="h6" sx={{ fontWeight: 'bold', textAlign: 'center', color: '#2c3e50' }}>
+                            <Typography
+                              variant="h6"
+                              sx={{
+                                fontWeight: 'bold',
+                                textAlign: 'center',
+                                color: '#2c3e50',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                minHeight: 64
+                              }}
+                            >
                               {t.topic_name}
                             </Typography>
-                            <Typography variant="body2" sx={{ color: '#34495e', textAlign: 'center', opacity: 0.8 }}>
+                            <Typography
+                              variant="body2"
+                              sx={{
+                                color: '#34495e',
+                                textAlign: 'center',
+                                opacity: 0.8
+                              }}
+                            >
                               Start with concept overview, then practice with questions
                             </Typography>
-                            <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap" useFlexGap>
+                            <Stack
+                              direction="row"
+                              spacing={1}
+                              justifyContent="center"
+                              flexWrap="wrap"
+                              useFlexGap
+                              sx={{ mt: 'auto', width: '100%' }}
+                            >
                               <Chip
                                 label={`Attempt cost: ${formatCredits(topicCost(t))}`}
                                 sx={{
