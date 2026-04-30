@@ -51,6 +51,9 @@ def _sentences(txt: str) -> list[str]:
     parts = re.split(r'(?<=[.!?])\s+', (txt or "").strip())
     return [p.strip() for p in parts if p.strip()]
 
+def _is_bulleted_concept(txt: str) -> bool:
+    return len(re.findall(r"(?m)^\s*[-*]\s+\*\*[^*\n]{2,80}:\*\*\s+\S", txt or "")) >= 3
+
 # ── Near-duplicate detection ────────────────
 STOPWORDS = {"and","or","the","a","an","to","of","for","in","on","with","by","as","from","into","using","use","vs","vs."}
 
@@ -93,13 +96,17 @@ def _dedupe_common_sentences(subs: list[dict]) -> None:
     """Remove high-frequency boilerplate sentences."""
     freq: dict[str, int] = {}
     sig = lambda s: re.sub(r"\W+", " ", s.lower()).strip()
-    
+
     for sub in subs:
+        if _is_bulleted_concept(sub.get("concept", "")):
+            continue
         for s in set(map(sig, _sentences(sub.get("concept", "")))):
             if s:
                 freq[s] = freq.get(s, 0) + 1
-    
+
     for sub in subs:
+        if _is_bulleted_concept(sub.get("concept", "")):
+            continue
         if _title_allows_common_boiler(sub.get("subtopic_title", "")):
             continue
         
