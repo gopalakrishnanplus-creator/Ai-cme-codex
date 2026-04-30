@@ -1410,10 +1410,10 @@ export default function AdaptiveApp() {
                             minHeight: 304,
                             p: 3,
                             display: 'flex',
-                            alignItems: 'stretch'
+                            flexDirection: 'column'
                           }}
                         >
-                          <Stack alignItems="center" spacing={2} sx={{ width: '100%', height: '100%' }}>
+                          <Stack alignItems="center" spacing={2} sx={{ width: '100%', height: '100%', flexGrow: 1 }}>
                             <Avatar sx={{
                               width: 56,
                               height: 56,
