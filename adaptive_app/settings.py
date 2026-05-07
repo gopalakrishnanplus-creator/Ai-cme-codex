@@ -57,7 +57,10 @@ class Settings:
         "https://azure1405.openai.azure.com/"
     )
     
-    openai_deployment: str = "gpt-4o-2025-06-01"  # deployment name
+    openai_deployment: str = (
+        get_secret("AZURE_OPENAI_DEPLOYMENT") or
+        "gpt-4o-2025-06-01"
+    )
     launch_signing_secret: str = get_secret("LAUNCH_SIGNING_SECRET") or "P7xi7yMI1h8BZ6ahAMwUBX4m"
 
 

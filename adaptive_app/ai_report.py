@@ -5,7 +5,7 @@ Requires env vars:
 AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_KEY, AZURE_OPENAI_DEPLOYMENT
 """
 from __future__ import annotations
-import os, json, uuid
+import json, uuid
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, List, Tuple
@@ -13,14 +13,15 @@ from openai import AzureOpenAI
 from sqlalchemy.orm import Session
 from models import Attempt, Session as DbSession, Question
 from services import load_plan
+from settings import settings
 
 # ─── Azure client ────────────────────────────────────────────────────
-client = AzureOpenAI( 
-    api_key="F3svzCo0dsnLJ3gunKBMMQn63ArKtsPm1HgnmpSgD8MhUnejhDsDJQQJ99CBACYeBjFXJ3w3AAABACOGVaDs", 
-    api_version="2024-02-15-preview", 
-    azure_endpoint="https://azure1405.openai.azure.com/", 
-) 
-DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+client = AzureOpenAI(
+    api_key=settings.openai_api_key,
+    api_version="2024-02-15-preview",
+    azure_endpoint=settings.openai_endpoint,
+)
+DEPLOYMENT = settings.openai_deployment
 
 # ─── Build a *rich* JSON context ────────────────────────────────────
 def build_context(db: Session, session_id: uuid.UUID) -> Dict[str, Any]:
@@ -77,6 +78,93 @@ def build_context(db: Session, session_id: uuid.UUID) -> Dict[str, Any]:
         "per_subtopic": per_sub,  # dict keyed by readable sub‑topic title
     }
 
+def _pct(correct: int, total: int) -> float:
+    return round((correct / total * 100.0), 1) if total else 0.0
+
+
+def _abridge(text: Any, limit: int = 180) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _fallback_report(ctx: Dict[str, Any]) -> str:
+    overall = ctx.get("overall") or {}
+    correct = int(overall.get("correct") or 0)
+    total = int(overall.get("total") or 0)
+    per_subtopic = ctx.get("per_subtopic") or {}
+
+    scored = []
+    missed_rows = []
+    for title, raw in per_subtopic.items():
+        rec = raw or {}
+        sub_correct = int(rec.get("correct") or 0)
+        sub_total = int(rec.get("total") or 0)
+        accuracy = _pct(sub_correct, sub_total)
+        scored.append((title, sub_correct, sub_total, accuracy, rec))
+        for missed in rec.get("incorrect_q") or []:
+            missed_rows.append((title, missed))
+
+    strengths = sorted(scored, key=lambda row: (-row[3], row[0]))[:3]
+    gaps = sorted(scored, key=lambda row: (row[3], row[0]))[:3]
+
+    lines = [
+        "## Overall score",
+        f"*Correct*: {correct} / {total} ({_pct(correct, total)}%)",
+        "",
+        "## Strengths (by sub-topic)",
+    ]
+
+    if strengths:
+        for title, _, sub_total, accuracy, _ in strengths:
+            note = "Good accuracy" if sub_total else "No scored questions"
+            lines.append(f"- {title} - {accuracy}% - {note} in this area.")
+    else:
+        lines.append("- No scored sub-topics were available for this session.")
+
+    lines.extend(["", "## Knowledge gaps (top 3)"])
+    if gaps:
+        for title, _, sub_total, accuracy, rec in gaps:
+            if sub_total:
+                lines.append(
+                    f"- {title}: {accuracy}% accuracy. Review this sub-topic and revisit the missed rationales before the next attempt."
+                )
+            else:
+                lines.append(f"- {title}: No scored attempts were available.")
+    else:
+        lines.append("- No knowledge gaps could be calculated from the available attempts.")
+
+    lines.extend([
+        "",
+        "## Missed questions and explanations",
+        "| Sub-topic | Question stem (abridged) | Your answer idx | Expert explanation |",
+        "|-----------|--------------------------|-----------------|--------------------|",
+    ])
+    if missed_rows:
+        for title, missed in missed_rows[:10]:
+            lines.append(
+                "| {title} | {stem} | {choice} | {explanation} |".format(
+                    title=_abridge(title, 80).replace("|", "\\|"),
+                    stem=_abridge(missed.get("stem"), 140).replace("|", "\\|"),
+                    choice=missed.get("your_choice_index", ""),
+                    explanation=_abridge(missed.get("explanation"), 180).replace("|", "\\|"),
+                )
+            )
+    else:
+        lines.append("| No missed questions recorded | - | - | - |")
+
+    lines.extend([
+        "",
+        "## Targeted next steps",
+        "1. Revisit the lowest-scoring sub-topics and reread their concept summaries.",
+        "2. Practice the missed questions again, focusing on why the correct option is preferred.",
+        "3. Use the strengths list to preserve momentum while closing the highest-priority gaps.",
+    ])
+
+    return "\n".join(lines)
+
+
 # ─── GPT‑4o call with a deeper, guided prompt ───────────────────────
 def run_gpt_report(ctx: Dict[str, Any]) -> str:
     sys_prompt = (
@@ -114,16 +202,23 @@ ONLY output the markdown.  Do not wrap it in code‑fences.
 {json.dumps(ctx, indent=2)}
 """
 
-    resp = client.chat.completions.create(
-        model=DEPLOYMENT,
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
+    try:
+        resp = client.chat.completions.create(
+            model=DEPLOYMENT,
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = resp.choices[0].message.content
+        if content and content.strip():
+            return content
+        print("Warning: Azure OpenAI returned an empty report; using fallback report.")
+    except Exception as exc:
+        print(f"Warning: Azure OpenAI report generation failed: {type(exc).__name__}: {exc}")
 
-    return resp.choices[0].message.content
+    return _fallback_report(ctx)
 # ai_report.py – add this alongside run_gpt_report()
 from session_store import store
 from services import load_plan
