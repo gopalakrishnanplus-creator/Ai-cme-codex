@@ -1445,75 +1445,98 @@ export default function AdaptiveApp() {
                             flexDirection: 'column'
                           }}
                         >
-                          <Stack alignItems="center" spacing={2} sx={{ width: '100%', height: '100%', flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-                            <Avatar sx={{
-                              width: 56,
-                              height: 56,
-                              background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
-                              fontSize: 24,
-                              boxShadow: '0 6px 12px rgba(255, 107, 53, 0.3)'
-                            }}>
-                              <BookIcon />
-                            </Avatar>
-                            <Typography
-                              variant="h6"
-                              sx={{
-                                fontWeight: 'bold',
-                                textAlign: 'center',
-                                color: '#2c3e50',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                minHeight: 64
-                              }}
-                            >
-                              {t.topic_name}
-                            </Typography>
-                            <Typography
-                              variant="body2"
-                              sx={{
-                                color: '#34495e',
-                                textAlign: 'center',
-                                opacity: 0.8
-                              }}
-                            >
-                              Start with concept overview, then practice with questions
-                            </Typography>
-                            <Stack
-                              direction="column"
-                              spacing={1.5}
-                              justifyContent="flex-end"
-                              sx={{
-                                mt: 'auto',
-                                width: '100%'
-                              }}
-                              >
-                              <Chip
-                                label={`Attempt cost: ${formatCredits(topicCost(t))}`}
-                                sx={{
-                                  background: 'rgba(52, 152, 219, 0.1)',
-                                  color: '#2c3e50',
-                                  border: '1px solid rgba(52, 152, 219, 0.25)',
-                                  fontWeight: 'bold'
-                                }}
-                              />
-                              <Box
-                                sx={{
-                                  width: '100%',
-                                  py: 1.2,
-                                  borderRadius: 3,
-                                  textAlign: 'center',
-                                  background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
-                                  color: 'white',
-                                  fontWeight: 'bold',
-                                  boxShadow: '0 4px 8px rgba(255, 107, 53, 0.3)'
-                                }}
-                              >
-                                Start Learning
-                              </Box>
+                          <Stack
+  alignItems="center"
+  spacing={2}
+  sx={{
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column'
+  }}
+>
+  <Box
+    sx={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      width: '100%',
+      flexGrow: 1
+    }}
+  >
+    <Avatar sx={{
+      width: 56,
+      height: 56,
+      background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
+      fontSize: 24,
+      boxShadow: '0 6px 12px rgba(255, 107, 53, 0.3)'
+    }}>
+      <BookIcon />
+    </Avatar>
 
-                            </Stack>
-                          </Stack>
+    <Typography
+      variant="h6"
+      sx={{
+        fontWeight: 'bold',
+        textAlign: 'center',
+        color: '#2c3e50',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: 120,
+        mt: 2
+      }}
+    >
+      {t.topic_name}
+    </Typography>
+
+    <Typography
+      variant="body2"
+      sx={{
+        color: '#34495e',
+        textAlign: 'center',
+        opacity: 0.8,
+        mt: 2
+      }}
+    >
+      Start with concept overview, then practice with questions
+    </Typography>
+  </Box>
+
+  <Stack
+    direction="column"
+    spacing={1.5}
+    sx={{
+      width: '100%',
+      mt: 'auto'
+    }}
+  >
+    <Chip
+      label={`Attempt cost: ${formatCredits(topicCost(t))}`}
+      sx={{
+        background: 'rgba(52, 152, 219, 0.1)',
+        color: '#2c3e50',
+        border: '1px solid rgba(52, 152, 219, 0.25)',
+        fontWeight: 'bold'
+      }}
+    />
+
+    <Box
+      sx={{
+        width: '100%',
+        py: 1.2,
+        borderRadius: 3,
+        textAlign: 'center',
+        background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
+        color: 'white',
+        fontWeight: 'bold',
+        boxShadow: '0 4px 8px rgba(255, 107, 53, 0.3)'
+      }}
+    >
+      Start Learning
+    </Box>
+  </Stack>
+</Stack>
                         </CardActionArea>
                       </Card>
                     </Zoom>
