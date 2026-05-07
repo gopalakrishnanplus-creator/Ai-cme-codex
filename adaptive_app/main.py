@@ -228,6 +228,28 @@ def _clear_idle_snapshot(session_id: UUID, user_id: UUID, topic_id: UUID) -> Non
     store.delete_idle(user_id, topic_id)
 
 
+def _coerce_elapsed_seconds(value: Any) -> int | None:
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return max(0, seconds)
+
+
+def _elapsed_seconds_from_cursors(cursors: Dict[str, Any] | None) -> int | None:
+    if not isinstance(cursors, dict):
+        return None
+    return _coerce_elapsed_seconds(cursors.get("elapsedSeconds"))
+
+
+def _elapsed_seconds_for_session(session_id: UUID, snapshot: Dict[str, Any] | None = None) -> int | None:
+    live = store.get(session_id)
+    elapsed = _elapsed_seconds_from_cursors(live.cursors if live else None)
+    if elapsed is not None:
+        return elapsed
+    return _elapsed_seconds_from_cursors((snapshot or {}).get("cursors"))
+
+
 def _session_from_idle_item(db: Session, item: Dict[str, Any]) -> Session | None:
     session_id = item.get("session_id")
     if not session_id:
@@ -346,6 +368,7 @@ def _post_session_result_to_platform(
     require_summary: bool = True,
     status_override: str | None = None,
     ended_at: datetime | None = None,
+    elapsed_seconds_override: int | None = None,
 ) -> tuple[FinalResultResponse, int]:
     user: User | None = sess.user
     if not user or user.platform_user_id is None:
@@ -367,11 +390,14 @@ def _post_session_result_to_platform(
 
     score = float(summary.score_pct) if summary else 0.0
     effective_ended_at = ended_at or sess.ended_utc
-    if sess.started_utc and effective_ended_at:
+    if elapsed_seconds_override is not None:
+        time_spent_seconds = max(0, int(elapsed_seconds_override))
+    elif sess.started_utc and effective_ended_at:
         delta = effective_ended_at - sess.started_utc
+        time_spent_seconds = max(0, int(delta.total_seconds()))
     else:
         delta = datetime.utcnow() - (sess.started_utc or datetime.utcnow())
-    time_spent_seconds = max(0, int(delta.total_seconds()))
+        time_spent_seconds = max(0, int(delta.total_seconds()))
 
     topic_credits = topic.credits if topic.credits is not None else 1
     credits_earned = -int(topic_credits)
@@ -468,7 +494,13 @@ def _already_terminated_response(sess: Session, delete_idle: bool = True) -> dic
     }
 
 
-def _terminate_session(db: Session, sess: Session, *, delete_idle: bool = True) -> dict:
+def _terminate_session(
+    db: Session,
+    sess: Session,
+    *,
+    delete_idle: bool = True,
+    elapsed_seconds_override: int | None = None,
+) -> dict:
     if sess.status == "terminated":
         return _already_terminated_response(sess, delete_idle=delete_idle)
     if sess.status == "completed":
@@ -490,6 +522,7 @@ def _terminate_session(db: Session, sess: Session, *, delete_idle: bool = True) 
         require_summary=False,
         status_override="terminated",
         ended_at=ended_at,
+        elapsed_seconds_override=elapsed_seconds_override,
     )
 
     store.pop(sess.session_id)
@@ -512,7 +545,8 @@ def api_resume_delete(user_id: UUID, topic_id: UUID, db: Session = Depends(get_d
         ok = store.delete_idle(user_id, topic_id)
         return {"deleted": ok, "status": "not-found"}
 
-    return _terminate_session(db, sess, delete_idle=True)
+    elapsed_seconds = _elapsed_seconds_for_session(sess.session_id, snapshot)
+    return _terminate_session(db, sess, delete_idle=True, elapsed_seconds_override=elapsed_seconds)
 
 
 @app.delete("/api/session/{session_id}/terminate")
@@ -521,7 +555,8 @@ def api_session_terminate(session_id: UUID, db: Session = Depends(get_db)):
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    return _terminate_session(db, sess, delete_idle=True)
+    elapsed_seconds = _elapsed_seconds_for_session(session_id)
+    return _terminate_session(db, sess, delete_idle=True, elapsed_seconds_override=elapsed_seconds)
 
 # --- Dashboard: list all attempted topics with status ---
 @app.get("/api/dashboard/{user_id}")
@@ -612,6 +647,7 @@ def api_report(session_id: UUID, db: Session = Depends(get_db)):
     s: Session = db.query(Session).get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
+    elapsed_seconds = _elapsed_seconds_for_session(session_id)
 
     # 1) If we already generated a report, just return it (no GPT call, no live store dependency)
     existing = db.query(SessionSummary).get(session_id)
@@ -671,14 +707,18 @@ def api_report(session_id: UUID, db: Session = Depends(get_db)):
     s.ended_utc = datetime.utcnow()
     s.last_activity_utc = s.ended_utc
     db.commit()
+    store.delete_idle(s.user_id, s.topic_id)  # NEW: remove any snapshot for this session
+    _, next_credit_balance = _post_session_result_to_platform(
+        db,
+        s,
+        require_summary=True,
+        elapsed_seconds_override=elapsed_seconds,
+    )
     try:
         store.pop(session_id)
-        
+
     except Exception:
         pass
-
-    store.delete_idle(s.user_id, s.topic_id)  # NEW: remove any snapshot for this session
-    _, next_credit_balance = _post_session_result_to_platform(db, s, require_summary=True)
     return ReportOut(markdown=md, credit_balance=next_credit_balance)
 # main.py
 from services import load_plan
@@ -843,5 +883,11 @@ def api_session_final_result(
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    platform_result, _ = _post_session_result_to_platform(db, sess, require_summary=True)
+    elapsed_seconds = _elapsed_seconds_for_session(session_id)
+    platform_result, _ = _post_session_result_to_platform(
+        db,
+        sess,
+        require_summary=True,
+        elapsed_seconds_override=elapsed_seconds,
+    )
     return platform_result

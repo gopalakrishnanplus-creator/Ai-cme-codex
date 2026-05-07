@@ -23,7 +23,9 @@ import {
   Timeline as TimelineIcon,
   Dashboard as DashboardIcon,
   ExitToApp as ExitToAppIcon,
-  AccountBalanceWallet as WalletIcon
+  AccountBalanceWallet as WalletIcon,
+  AccessTime as AccessTimeIcon,
+  ShoppingCart as ShoppingCartIcon
 } from "@mui/icons-material";
 
 import { marked } from "marked";
@@ -47,6 +49,8 @@ const SUPPORT_WIDGET_LINKS = {
   categories: "https://help.cpdinclinic.co.in/support/student/faq/page/aicme-student-ai-cme-flow-category-selection-page/widget/?system=AICME&flow=Student+AI-CME+Flow",
   concept: "https://help.cpdinclinic.co.in/support/student/faq/page/aicme-student-ai-cme-flow-sub-topics-page/widget/?system=AICME&flow=Student+AI-CME+Flow",
 };
+
+const CREDIT_SHOP_URL = "https://staging-68a5-inditechsites.wpcomstaging.com/shop";
 
 function SupportWidget({ src }) {
   const [open, setOpen] = useState(false);
@@ -224,6 +228,12 @@ export default function AdaptiveApp() {
   const [loading, setLoading] = useState(false);
   const [creditBalance, setCreditBalance] = useState(null);
 
+  /* ---------- session timer ---------- */
+  const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
+  const [sessionTimerPaused, setSessionTimerPaused] = useState(true);
+  const sessionElapsedRef = useRef(0);
+  const sessionTimerPausedRef = useRef(true);
+
   /* ---------- resume session state ---------- */
   const [resumeData, setResumeData] = useState([]);
   const [showResumePrompt, setShowResumePrompt] = useState(false);
@@ -250,6 +260,72 @@ export default function AdaptiveApp() {
       "Make sure the Education Platform redirects with ?user_id=<adaptive-user-uuid>."
     );
   }
+
+  const normalizeElapsedSeconds = (value) => {
+    const seconds = Number(value);
+    return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  };
+
+  const updateSessionElapsed = (value) => {
+    const next = normalizeElapsedSeconds(value);
+    sessionElapsedRef.current = next;
+    setSessionElapsedSeconds(next);
+    return next;
+  };
+
+  const setSessionTimerPausedValue = (paused) => {
+    sessionTimerPausedRef.current = paused;
+    setSessionTimerPaused(paused);
+  };
+
+  const pauseSessionTimer = () => {
+    const elapsed = updateSessionElapsed(sessionElapsedRef.current);
+    setSessionTimerPausedValue(true);
+    return elapsed;
+  };
+
+  const startSessionTimer = (elapsedSeconds = sessionElapsedRef.current) => {
+    updateSessionElapsed(elapsedSeconds);
+    setSessionTimerPausedValue(false);
+  };
+
+  const resetSessionTimer = () => {
+    updateSessionElapsed(0);
+    setSessionTimerPausedValue(true);
+  };
+
+  const sessionCursors = (overrides = {}) => ({
+    subIdx,
+    mcqIdx,
+    attemptIdx,
+    view,
+    tab,
+    history,
+    elapsedSeconds: sessionElapsedRef.current,
+    ...overrides,
+  });
+
+  const saveSessionSnapshot = async (overrides = {}) => {
+    if (!sessionId || !topicId || !plan || finished) return null;
+    const { data } = await axios.post("/api/api/session/snapshot", {
+      user_id: USER_ID,
+      topic_id: topicId,
+      session_id: sessionId,
+      cursors: sessionCursors(overrides)
+    });
+    return data;
+  };
+
+  const formatElapsedTime = (totalSeconds) => {
+    const safeSeconds = normalizeElapsedSeconds(totalSeconds);
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+    const seconds = safeSeconds % 60;
+    const pad = (value) => String(value).padStart(2, "0");
+    return hours > 0
+      ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`
+      : `${pad(minutes)}:${pad(seconds)}`;
+  };
 
   useEffect(() => {
     if (!USER_ID) {
@@ -359,6 +435,21 @@ export default function AdaptiveApp() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [locked]);
 
+  useEffect(() => {
+    if (!hasActiveSession || finished || sessionTimerPaused) return;
+
+    const id = setInterval(() => {
+      if (sessionTimerPausedRef.current) return;
+      setSessionElapsedSeconds(prev => {
+        const next = prev + 1;
+        sessionElapsedRef.current = next;
+        return next;
+      });
+    }, 1000);
+
+    return () => clearInterval(id);
+  }, [hasActiveSession, finished, sessionTimerPaused]);
+
   /* ---------- idle timer: 5 minutes inactivity ---------- */
   useEffect(() => {
     if (!sessionId || !topicId || !plan || finished) return;
@@ -368,13 +459,14 @@ export default function AdaptiveApp() {
       clearTimeout(timer);
       timer = setTimeout(async () => {
         alert("Session progress is being saved because of inactivity.");
+        const elapsedSeconds = pauseSessionTimer();
 
         try {
           await axios.post("/api/api/session/idle-save", {
             user_id: USER_ID,
             topic_id: topicId,
             session_id: sessionId,
-            cursors: { subIdx, mcqIdx, attemptIdx, view, tab, history }
+            cursors: sessionCursors({ elapsedSeconds })
           });
         } catch (e) {
           console.error("Error saving idle session:", e);
@@ -383,6 +475,7 @@ export default function AdaptiveApp() {
         setPlan(null);
         setSessionId("");
         setHistory([]);
+        resetSessionTimer();
         setView("home");
       }, 5 * 60 * 1000);
     };
@@ -402,19 +495,14 @@ export default function AdaptiveApp() {
     if (!sessionId || !topicId || !plan || finished) return;
     const save = async () => {
       try {
-        await axios.post("/api/api/session/snapshot", {
-          user_id: USER_ID,
-          topic_id: topicId,
-          session_id: sessionId,
-          cursors: { subIdx, mcqIdx, attemptIdx, view, tab, history }
-        });
+        await saveSessionSnapshot();
       } catch (e) {
         console.warn("Snapshot save failed", e);
       }
     };
     const id = setTimeout(save, 400);
     return () => clearTimeout(id);
-  }, [sessionId, topicId, plan, finished, subIdx, mcqIdx, attemptIdx, view, tab, history]);
+  }, [sessionId, topicId, plan, finished, subIdx, mcqIdx, attemptIdx, view, tab, history, sessionElapsedSeconds]);
 
   /* ---------- report generation on finish ---------- */
   useEffect(() => {
@@ -540,6 +628,7 @@ export default function AdaptiveApp() {
       setSubIdx(0); setMcqIdx(0); setAttemptIdx(0);
       setChoice(null); setResult(null); setMode("question"); setTab(0);
       setFinished(false); setReportMd(""); setLoadingReport(false);
+      resetSessionTimer();
 
       setView("categories");
     } catch (error) {
@@ -578,6 +667,13 @@ export default function AdaptiveApp() {
       }
 
       const c = snapshot.cursors || {};
+      const elapsedSeconds = normalizeElapsedSeconds(c.elapsedSeconds);
+      if (next) {
+        startSessionTimer(elapsedSeconds);
+      } else {
+        updateSessionElapsed(elapsedSeconds);
+        setSessionTimerPausedValue(true);
+      }
       setHistory(c.history || []);
       setShowResumePrompt(false);
     } catch (error) {
@@ -670,6 +766,9 @@ export default function AdaptiveApp() {
         setAutoNextIn(0);
         clearAutoNextTimers();
         setMode("question");
+        startSessionTimer(0);
+      } else {
+        startSessionTimer();
       }
       setView("questions");
       setTab(1);
@@ -694,6 +793,7 @@ export default function AdaptiveApp() {
     setFinished(false);
     setReportMd("");
     setLoadingReport(false);
+    resetSessionTimer();
 
     // Refetch unfinished sessions from backend when going home
     try {
@@ -801,6 +901,7 @@ export default function AdaptiveApp() {
     setReportMd("");
     setLoadingReport(false);
     setHistory([]);
+    resetSessionTimer();
   };
 
   const saveAndLeaveActiveSession = async () => {
@@ -811,11 +912,12 @@ export default function AdaptiveApp() {
 
     setLoading(true);
     try {
+      const elapsedSeconds = pauseSessionTimer();
       await axios.post("/api/api/session/idle-save", {
         user_id: USER_ID,
         topic_id: topicId,
         session_id: sessionId,
-        cursors: { subIdx, mcqIdx, attemptIdx, view, tab, history }
+        cursors: sessionCursors({ elapsedSeconds })
       });
 
       const { data: resumeStatusData } = await axios.get(`/api/api/resume-status/${USER_ID}`);
@@ -840,6 +942,7 @@ export default function AdaptiveApp() {
       }
     } catch (error) {
       console.error("Error saving current session before leaving:", error);
+      startSessionTimer();
     } finally {
       setActiveSessionPromptOpen(false);
       setLoading(false);
@@ -928,13 +1031,19 @@ export default function AdaptiveApp() {
     setLastChosenIdx(null);
   };
 
-  const proceed = () => {
+  const proceed = async () => {
     clearAutoNextTimers();
     setAwaitingAutoNext(false);
     setAutoNextIn(0);
     const lastSub = plan.subtopics.length - 1;
     const lastMcq = currentSub().questions.length - 1;
     if (subIdx === lastSub && mcqIdx === lastMcq) {
+      const elapsedSeconds = pauseSessionTimer();
+      try {
+        await saveSessionSnapshot({ elapsedSeconds, finished: true });
+      } catch (e) {
+        console.warn("Final session timer snapshot failed", e);
+      }
       setFinished(true);
       return;
     }
@@ -975,6 +1084,57 @@ export default function AdaptiveApp() {
         fontWeight: 'bold',
         '& .MuiChip-icon': {
           color: '#ff6b35'
+        }
+      }}
+    />
+  );
+
+  const renderBuyCreditsButton = () => {
+    const isOutOfCredits = creditBalance !== null && normalizeElapsedSeconds(creditBalance) === 0;
+
+    return (
+      <Button
+        component="a"
+        href={CREDIT_SHOP_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        variant={isOutOfCredits ? "contained" : "outlined"}
+        startIcon={<ShoppingCartIcon />}
+        sx={{
+          borderRadius: 25,
+          px: 2.5,
+          py: 0.5,
+          borderColor: '#ff6b35',
+          color: isOutOfCredits ? 'white' : '#ff6b35',
+          background: isOutOfCredits ? 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)' : 'white',
+          fontWeight: 'bold',
+          textTransform: 'none',
+          fontSize: '1rem',
+          width: { xs: "100%", sm: "auto" },
+          boxShadow: isOutOfCredits ? '0 4px 12px rgba(255, 107, 53, 0.25)' : '0 4px 12px rgba(44, 62, 80, 0.08)',
+          '&:hover': {
+            borderColor: '#ff6b35',
+            color: 'white',
+            background: 'linear-gradient(135deg, #f7931e 0%, #ff6b35 100%)'
+          }
+        }}
+      >
+        Buy Credits
+      </Button>
+    );
+  };
+
+  const renderSessionTimer = () => (
+    <Chip
+      icon={<AccessTimeIcon />}
+      label={`Time taken: ${formatElapsedTime(sessionElapsedSeconds)}`}
+      sx={{
+        background: 'rgba(255, 255, 255, 0.18)',
+        color: 'white',
+        border: '1px solid rgba(255,255,255,0.35)',
+        fontWeight: 'bold',
+        '& .MuiChip-icon': {
+          color: 'white'
         }
       }}
     />
@@ -1344,6 +1504,7 @@ export default function AdaptiveApp() {
                   sx={{ width: { xs: "100%", md: "auto" } }}
                 >
                   {renderCreditBalance()}
+                  {renderBuyCreditsButton()}
                   <Button
                     variant="outlined"
                     startIcon={<ExitToAppIcon />}
@@ -1990,22 +2151,30 @@ export default function AdaptiveApp() {
                     </Breadcrumbs>
                   </Paper>
 
-                  <Stack direction="row" alignItems="center" justifyContent="space-between">
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    alignItems={{ xs: "flex-start", md: "center" }}
+                    justifyContent="space-between"
+                    spacing={2}
+                  >
                     <Stack direction="row" alignItems="center" spacing={2}>
                       <QuizIcon sx={{ fontSize: 28 }} />
                       <Typography variant="h5" sx={{ fontWeight: 'bold' }}>
                         {currentSub().subtopic_title}
                       </Typography>
                     </Stack>
-                    <Chip
-                      label={`${Math.round(getProgress())}% Complete`}
-                      sx={{
-                        background: 'rgba(255,255,255,0.2)',
-                        color: 'white',
-                        fontWeight: 'bold',
-                        border: '1px solid rgba(255,255,255,0.3)'
-                      }}
-                    />
+                    <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', gap: 1 }}>
+                      {renderSessionTimer()}
+                      <Chip
+                        label={`${Math.round(getProgress())}% Complete`}
+                        sx={{
+                          background: 'rgba(255,255,255,0.2)',
+                          color: 'white',
+                          fontWeight: 'bold',
+                          border: '1px solid rgba(255,255,255,0.3)'
+                        }}
+                      />
+                    </Stack>
                   </Stack>
 
                   <LinearProgress
