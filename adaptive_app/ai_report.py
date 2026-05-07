@@ -16,8 +16,7 @@ from services import load_plan
 
 # ─── Azure client ────────────────────────────────────────────────────
 client = AzureOpenAI( 
-    #api_key="CzrrWvXbsmYcNguU1SqBpE9HDhhbfYsbkq3UedythCYCV9zNQ4mLJQQJ99BEACHYHv6XJ3w3AAABACOGiIPm", 
-    api_key=os.getenv("AZURE_OPENAI_KEY"),
+    api_key="CzrrWvXbsmYcNguU1SqBpE9HDhhbfYsbkq3UedythCYCV9zNQ4mLJQQJ99BEACHYHv6XJ3w3AAABACOGiIPm", 
     api_version="2024-02-15-preview", 
     azure_endpoint="https://azure1405.openai.azure.com/", 
 ) 
