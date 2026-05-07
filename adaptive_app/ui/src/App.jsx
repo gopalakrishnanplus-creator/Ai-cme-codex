@@ -1445,7 +1445,7 @@ export default function AdaptiveApp() {
                             flexDirection: 'column'
                           }}
                         >
-                          <Stack alignItems="center" spacing={2} sx={{ width: '100%', height: '100%', flexGrow: 1 }}>
+                          <Stack alignItems="center" spacing={2} sx={{ width: '100%', height: '100%', flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
                             <Avatar sx={{
                               width: 56,
                               height: 56,
@@ -1480,13 +1480,14 @@ export default function AdaptiveApp() {
                               Start with concept overview, then practice with questions
                             </Typography>
                             <Stack
-                              direction="row"
-                              spacing={1}
-                              justifyContent="center"
-                              flexWrap="wrap"
-                              useFlexGap
-                              sx={{ mt: 'auto', width: '100%' }}
-                            >
+                              direction="column"
+                              spacing={1.5}
+                              justifyContent="flex-end"
+                              sx={{
+                                mt: 'auto',
+                                width: '100%'
+                              }}
+                              >
                               <Chip
                                 label={`Attempt cost: ${formatCredits(topicCost(t))}`}
                                 sx={{
@@ -1496,15 +1497,21 @@ export default function AdaptiveApp() {
                                   fontWeight: 'bold'
                                 }}
                               />
-                              <Chip
-                                label="Start Learning"
+                              <Box
                                 sx={{
+                                  width: '100%',
+                                  py: 1.2,
+                                  borderRadius: 3,
+                                  textAlign: 'center',
                                   background: 'linear-gradient(135deg, #ff6b35 0%, #f7931e 100%)',
                                   color: 'white',
                                   fontWeight: 'bold',
                                   boxShadow: '0 4px 8px rgba(255, 107, 53, 0.3)'
                                 }}
-                              />
+                              >
+                                Start Learning
+                              </Box>
+
                             </Stack>
                           </Stack>
                         </CardActionArea>
