@@ -216,17 +216,54 @@ def api_topics(
 
 from services import load_plan
 
+TERMINAL_SESSION_STATUSES = {"completed", "terminated"}
+
+
+def _is_terminal_session(sess: Session | None) -> bool:
+    return bool(sess and str(sess.status or "").lower() in TERMINAL_SESSION_STATUSES)
+
+
+def _clear_idle_snapshot(session_id: UUID, user_id: UUID, topic_id: UUID) -> None:
+    store.pop(session_id)
+    store.delete_idle(user_id, topic_id)
+
+
+def _session_from_idle_item(db: Session, item: Dict[str, Any]) -> Session | None:
+    session_id = item.get("session_id")
+    if not session_id:
+        return None
+    try:
+        return db.query(Session).get(UUID(str(session_id)))
+    except Exception:
+        return None
+
+
+def _unfinished_items_for_user(db: Session, user_id: UUID) -> list[dict]:
+    unfinished = []
+    for item in store.has_idle(user_id):
+        sess = _session_from_idle_item(db, item)
+        if _is_terminal_session(sess):
+            _clear_idle_snapshot(sess.session_id, sess.user_id, sess.topic_id)
+            continue
+
+        row = dict(item)
+        plan = load_plan(row["topic_id"])
+        row["topic_name"] = plan["topic_name"] if plan else "Unknown topic"
+        unfinished.append(row)
+    return unfinished
+
+
 # --- NEW: Lock status (live sessions + unfinished JSON files) ---
 @app.get("/api/lock-status/{user_id}")
-def api_lock_status(user_id: UUID):
+def api_lock_status(user_id: UUID, db: Session = Depends(get_db)):
     live = [str(s) for s in store.active_by_user(user_id)]
-    unfinished = store.has_idle(user_id)
+    unfinished = _unfinished_items_for_user(db, user_id)
     return {"locked": bool(unfinished),"unfinished": unfinished}
 
 # --- Harden existing /api/session against starting while locked ---
 @app.post("/api/session", response_model=UUID, summary="Start a study session")
 def api_start_session(payload: StartSessionIn, db: Session = Depends(get_db)):
-    if store.is_locked(payload.user_id):
+    if _unfinished_items_for_user(db, payload.user_id):
         # Block starting another topic while locked by live/unfinished session
         raise HTTPException(
             status_code=409,
@@ -244,13 +281,17 @@ def api_idle_save(
     cursors: Dict[str, Any] = Body(default={}),
     db: Session = Depends(get_db)
 ):
+    s: Session = db.query(Session).get(session_id)
+    if _is_terminal_session(s):
+        _clear_idle_snapshot(session_id, user_id, topic_id)
+        return {"saved": False, "ignored": True, "status": s.status}
+
     # Save current cursors too (for exact resume point)
     store.set_cursors(session_id, **cursors)
     # Persist snapshot to file-system
     f = store.save_idle_snapshot(session_id)
 
     # Mark session as abandoned and close it lightly
-    s: Session = db.query(Session).get(session_id)
     if s:
         s.status = "abandoned"
         s.ended_utc = datetime.utcnow()
@@ -263,23 +304,18 @@ def api_idle_save(
 
 # --- check for unfinished sessions for a user ---
 @app.get("/api/resume-status/{user_id}")
-def api_resume_status(user_id: UUID):
-    files = store.has_idle(user_id)  # [{"topic_id": "...", "file": "..."}]
-    enriched = []
-    for d in files:
-        plan = load_plan(d["topic_id"])
-        enriched.append({
-            "topic_id": d["topic_id"],
-            "topic_name": plan["topic_name"] if plan else "(Unknown topic)",
-            "file": d["file"]
-        })
-    return {"unfinished": enriched}
+def api_resume_status(user_id: UUID, db: Session = Depends(get_db)):
+    return {"unfinished": _unfinished_items_for_user(db, user_id)}
 
 
 # --- resume: fetch JSON snapshot for a given topic ---
 @app.get("/api/resume/{user_id}/{topic_id}")
-def api_resume(user_id: UUID, topic_id: UUID):
+def api_resume(user_id: UUID, topic_id: UUID, db: Session = Depends(get_db)):
     data = store.load_idle(user_id, topic_id)
+    sess = _session_from_idle_item(db, data or {})
+    if _is_terminal_session(sess):
+        _clear_idle_snapshot(sess.session_id, sess.user_id, sess.topic_id)
+        return {}
     return data or {}
 
 def _find_session_for_snapshot(db: Session, user_id: UUID, topic_id: UUID, snapshot: Dict[str, Any] | None) -> Session | None:
@@ -499,7 +535,7 @@ def api_dashboard(user_id: UUID, db: Session = Depends(get_db)):
     summaries = { str(r.session_id): r
                   for r in db.query(SessionSummary).filter(SessionSummary.user_id == user_id).all() }
 
-    unfinished_items = store.has_idle(user_id)
+    unfinished_items = _unfinished_items_for_user(db, user_id)
     unfinished_session_ids = {
         str(d["session_id"]).lower()
         for d in unfinished_items
@@ -648,12 +684,8 @@ def api_report(session_id: UUID, db: Session = Depends(get_db)):
 from services import load_plan
 
 @app.get("/api/resume-status/{user_id}")
-def api_resume_status(user_id: UUID):
-    items = store.has_idle(user_id)  # [{'topic_id': '...', 'file': '...'}, ...]
-    for it in items:
-        plan = load_plan(it["topic_id"])
-        it["topic_name"] = plan["topic_name"] if plan else "Unknown topic"
-    return {"unfinished": items}
+def api_resume_status(user_id: UUID, db: Session = Depends(get_db)):
+    return {"unfinished": _unfinished_items_for_user(db, user_id)}
 # --- NEW: Persist a point-in-time snapshot, but keep the session live ---
 @app.post("/api/session/snapshot")
 def api_session_snapshot(
@@ -661,7 +693,13 @@ def api_session_snapshot(
     topic_id: UUID = Body(...),
     session_id: UUID = Body(...),
     cursors: Dict[str, Any] = Body(default={}),
+    db: Session = Depends(get_db),
 ):
+    s: Session = db.query(Session).get(session_id)
+    if _is_terminal_session(s):
+        _clear_idle_snapshot(session_id, user_id, topic_id)
+        return {"saved": False, "ignored": True, "status": s.status}
+
     # Ensure the live container exists and update cursors
     store.ensure(session_id, user_id, topic_id)
     store.set_cursors(session_id, **cursors)

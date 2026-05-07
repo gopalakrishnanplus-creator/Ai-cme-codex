@@ -296,7 +296,7 @@ export default function AdaptiveApp() {
 
   /* ---------- idle timer: 5 minutes inactivity ---------- */
   useEffect(() => {
-    if (!sessionId || !topicId || !plan) return;
+    if (!sessionId || !topicId || !plan || finished) return;
 
     let timer;
     const reset = () => {
@@ -330,11 +330,11 @@ export default function AdaptiveApp() {
       clearTimeout(timer);
       events.forEach(e => window.removeEventListener(e, reset));
     };
-  }, [sessionId, topicId, plan, subIdx, mcqIdx, attemptIdx, view, tab, history]);
+  }, [sessionId, topicId, plan, finished, subIdx, mcqIdx, attemptIdx, view, tab, history]);
 
   /* ---------- NEW: continuous non-destructive snapshots ---------- */
   useEffect(() => {
-    if (!sessionId || !topicId || !plan) return;
+    if (!sessionId || !topicId || !plan || finished) return;
     const save = async () => {
       try {
         await axios.post("/api/api/session/snapshot", {
@@ -349,7 +349,7 @@ export default function AdaptiveApp() {
     };
     const id = setTimeout(save, 400);
     return () => clearTimeout(id);
-  }, [sessionId, topicId, plan, subIdx, mcqIdx, attemptIdx, view, tab, history]);
+  }, [sessionId, topicId, plan, finished, subIdx, mcqIdx, attemptIdx, view, tab, history]);
 
   /* ---------- report generation on finish ---------- */
   useEffect(() => {
@@ -363,6 +363,10 @@ export default function AdaptiveApp() {
         if (cancelled) return;
 
         setReportMd(data.markdown);
+        setResumeData(items => (items || []).filter(item =>
+          item.session_id !== sessionId && item.topic_id !== topicId
+        ));
+        setShowResumePrompt(false);
         const reportedBalance = data?.credit_balance;
         const nextBalance = Number(reportedBalance);
         if (reportedBalance !== null && reportedBalance !== undefined && Number.isFinite(nextBalance)) {
