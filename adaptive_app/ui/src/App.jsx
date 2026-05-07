@@ -40,6 +40,71 @@ function markdownMarkup(contents) {
   return { __html: marked.parse(contents || "") };
 }
 
+const SUPPORT_WIDGET_LINKS = {
+  home: "https://help.cpdinclinic.co.in/support/student/faq/page/aicme-student-ai-cme-flow-ai-cme-home-page/widget/?system=AICME&flow=Student+AI-CME+Flow",
+  dashboard: "https://help.cpdinclinic.co.in/support/student/faq/page/aicme-student-ai-cme-flow-ai-cme-sessions-dashboard/widget/?system=AICME&flow=Student+AI-CME+Flow",
+  topics: "https://help.cpdinclinic.co.in/support/student/faq/page/aicme-student-ai-cme-flow-super-topics-page/widget/?system=AICME&flow=Student+AI-CME+Flow",
+  categories: "https://help.cpdinclinic.co.in/support/student/faq/page/aicme-student-ai-cme-flow-category-selection-page/widget/?system=AICME&flow=Student+AI-CME+Flow",
+  concept: "https://help.cpdinclinic.co.in/support/student/faq/page/aicme-student-ai-cme-flow-sub-topics-page/widget/?system=AICME&flow=Student+AI-CME+Flow",
+};
+
+function SupportWidget({ src }) {
+  const [open, setOpen] = useState(false);
+
+  if (!src) return null;
+
+  return (
+    <>
+      <div
+        id="support-widget-button"
+        onClick={() => setOpen(value => !value)}
+        style={{
+          position: "fixed",
+          bottom: 20,
+          right: 20,
+          background: "#2f8f9d",
+          color: "#fff",
+          borderRadius: 40,
+          padding: "12px 18px",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          fontWeight: 600,
+          cursor: "pointer",
+          zIndex: 9999,
+        }}
+      >
+        💬 Need Help?
+      </div>
+      <div
+        id="support-widget-modal"
+        style={{
+          position: "fixed",
+          bottom: 90,
+          right: 20,
+          width: 380,
+          height: 520,
+          background: "#fff",
+          borderRadius: 12,
+          display: open ? "block" : "none",
+          overflow: "hidden",
+          zIndex: 9999,
+        }}
+      >
+        <iframe
+          src={src}
+          title="Support help widget"
+          style={{
+            width: "100%",
+            height: "100%",
+            border: "none",
+          }}
+        />
+      </div>
+    </>
+  );
+}
+
 /* === NEW: Compute next unanswered from snapshot attempts === */
 function nextCursorFromAttempts(planJson, snapshot) {
   const attempts = snapshot?.attempts || [];
@@ -1371,6 +1436,7 @@ export default function AdaptiveApp() {
             </Box>
           </Fade>
         </Container>
+        <SupportWidget src={SUPPORT_WIDGET_LINKS.home} />
       </Box>
     );
   }
@@ -1550,6 +1616,7 @@ export default function AdaptiveApp() {
             </Box>
           </Slide>
         </Container>
+        <SupportWidget src={SUPPORT_WIDGET_LINKS.topics} />
       </Box>
     );
   }
@@ -1684,6 +1751,7 @@ export default function AdaptiveApp() {
         })}
 
         {activeSessionDialog}
+        <SupportWidget src={SUPPORT_WIDGET_LINKS.categories} />
       </Box>
     );
   }
@@ -1844,6 +1912,7 @@ export default function AdaptiveApp() {
         {renderLessonFooter("Back to Categories", () => setView("categories"))}
 
         {activeSessionDialog}
+        <SupportWidget src={SUPPORT_WIDGET_LINKS.concept} />
       </Box>
     );
   }
@@ -2742,6 +2811,7 @@ export default function AdaptiveApp() {
           </Fade>
         </Container>
         {terminateSessionDialog}
+        <SupportWidget src={SUPPORT_WIDGET_LINKS.dashboard} />
       </Box>
     );
   }
